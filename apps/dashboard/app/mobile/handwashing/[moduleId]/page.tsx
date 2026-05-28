@@ -143,7 +143,7 @@ export default function HandwashingPage() {
       return (
         <HandwashingCamera
           onComplete={handleComplete}
-          onExit={() => router.back()}
+          onExit={() => router.push("/mobile")}
           allowCameraFlip={true}
           facingMode="user"
         />
@@ -153,7 +153,7 @@ export default function HandwashingPage() {
       <ModuleHandwashSession
         moduleId={moduleId}
         onComplete={handleComplete}
-        onExit={() => router.back()}
+        onExit={() => router.push("/mobile")}
       />
     );
   }

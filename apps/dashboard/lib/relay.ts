@@ -1,23 +1,21 @@
 import { createClient } from "@/lib/supabase";
 
 export interface RelayState {
-  pump: boolean;
-  uv_light: boolean;
+  pump?: boolean;
+  uv?: boolean;
 }
 
-export async function setRelay(moduleId: string, state: Partial<RelayState>): Promise<void> {
+export async function setRelay(state: RelayState): Promise<void> {
   const supabase = createClient();
-  const db = supabase as any; // eslint-disable-line @typescript-eslint/no-explicit-any
-  await db.from("module_relay").upsert({
-    module_id: moduleId,
-    pump: state.pump ?? false,
-    uv_light: state.uv_light ?? false,
-    updated_at: new Date().toISOString(),
-  }, { onConflict: "module_id" });
+  const update: Record<string, boolean> = {};
+  if (state.pump !== undefined) update.pump = state.pump;
+  if (state.uv !== undefined) update.uv = state.uv;
+  if (Object.keys(update).length === 0) return;
+  await (supabase as any).from("relay_state").update(update).eq("id", 1); // eslint-disable-line @typescript-eslint/no-explicit-any
 }
 
-export async function pulsePump(moduleId: string, durationMs = 3000): Promise<void> {
-  await setRelay(moduleId, { pump: true, uv_light: false });
+export async function pulsePump(durationMs = 3000): Promise<void> {
+  await setRelay({ pump: true });
   await new Promise((r) => setTimeout(r, durationMs));
-  await setRelay(moduleId, { pump: false, uv_light: false });
+  await setRelay({ pump: false });
 }

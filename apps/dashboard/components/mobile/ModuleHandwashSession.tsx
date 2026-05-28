@@ -240,7 +240,7 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
         if (detectHoldRef.current >= DETECT_HOLD_MS) {
           detectHoldRef.current = 0;
           transitionStage("pump_countdown");
-          setRelay(moduleId, { pump: true, uv_light: false }).catch(() => {});
+          setRelay({ pump: true }).catch(() => {});
         }
       } else {
         detectHoldRef.current = Math.max(0, detectHoldRef.current - deltaMs * 0.5);
@@ -264,7 +264,7 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
           absentMsRef.current = 0;
           transitionStage("uv_wait");
           uvWaitMsRef.current = 0;
-          setRelay(moduleId, { pump: false, uv_light: true }).catch(() => {});
+          setRelay({ pump: false, uv: true }).catch(() => {});
         }
       } else {
         absentMsRef.current = Math.max(0, absentMsRef.current - deltaMs * 0.3);
@@ -294,7 +294,7 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
 
       if (uvScoreMsRef.current >= UV_DURATION_MS) {
         transitionStage("loading"); // stop further updates
-        setRelay(moduleId, { pump: false, uv_light: false }).catch(() => {});
+        setRelay({ pump: false, uv: false }).catch(() => {});
         const finalScore = calcFinalScore(scoredRef.current, latheringMsRef.current);
         onComplete(scoredRef.current, finalScore, latheringMsRef.current);
         return;
@@ -357,9 +357,20 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
       runningRef.current = false;
       streamRef.current?.getTracks().forEach(t => t.stop());
       handsRef.current?.close();
-      setRelay(moduleId, { pump: false, uv_light: false }).catch(() => {});
+      setRelay({ pump: false, uv: false }).catch(() => {});
     };
   }, [handleResults, moduleId, transitionStage]);
+
+  // Landscape orientation lock for the duration of the session
+  useEffect(() => {
+    const lock = async () => {
+      try { await (screen.orientation as any).lock("landscape"); } catch {} // eslint-disable-line @typescript-eslint/no-explicit-any
+    };
+    lock();
+    return () => {
+      try { screen.orientation.unlock(); } catch {}
+    };
+  }, []);
 
   // Pump countdown — 3-2-1 when stage is pump_countdown
   useEffect(() => {
@@ -371,7 +382,7 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
       setPumpCountdown(count);
       if (count <= 0) {
         clearInterval(iv);
-        setRelay(moduleId, { pump: false, uv_light: false }).catch(() => {});
+        setRelay({ pump: false }).catch(() => {});
         transitionStage("lather");
       }
     }, 1000);
