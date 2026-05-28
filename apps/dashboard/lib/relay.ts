@@ -6,12 +6,18 @@ export interface RelayState {
 }
 
 export async function setRelay(state: RelayState): Promise<void> {
-  const supabase = createClient();
   const update: Record<string, boolean> = {};
   if (state.pump !== undefined) update.pump = state.pump;
   if (state.uv !== undefined) update.uv = state.uv;
   if (Object.keys(update).length === 0) return;
-  await (supabase as any).from("relay_state").update(update).eq("id", 1); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+  const supabase = createClient();
+  const { error } = await (supabase as any) // eslint-disable-line @typescript-eslint/no-explicit-any
+    .from("relay_state")
+    .update(update)
+    .eq("id", 1);
+
+  if (error) console.error("[relay] setRelay failed:", error.message, update);
 }
 
 export async function pulsePump(durationMs = 3000): Promise<void> {
