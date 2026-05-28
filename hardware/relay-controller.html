@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Relay Controller</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family: "Courier New", monospace;
+        background: #0a0a0a;
+        color: #e0e0e0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 2rem;
+        padding: 2rem;
+      }
+
+      h1 {
+        font-size: 11px;
+        letter-spacing: 0.3em;
+        color: #555;
+        text-transform: uppercase;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+        width: 100%;
+        max-width: 440px;
+      }
+
+      .card {
+        border: 1px solid #222;
+        border-radius: 4px;
+        padding: 2rem 1.5rem;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1.5rem;
+        background: #111;
+        transition: border-color 0.2s;
+        cursor: pointer;
+        user-select: none;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .card::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        transition: opacity 0.3s;
+      }
+
+      .card.pump::before {
+        background: radial-gradient(
+          ellipse at 50% 0%,
+          #0040ff18,
+          transparent 70%
+        );
+      }
+      .card.uv::before {
+        background: radial-gradient(
+          ellipse at 50% 0%,
+          #8800ff18,
+          transparent 70%
+        );
+      }
+
+      .card.on {
+        border-color: #333;
+      }
+      .card.pump.on::before {
+        opacity: 1;
+      }
+      .card.uv.on::before {
+        opacity: 1;
+      }
+
+      .label {
+        font-size: 10px;
+        letter-spacing: 0.25em;
+        color: #444;
+        text-transform: uppercase;
+      }
+
+      .icon {
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        border: 1px solid #2a2a2a;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 22px;
+        transition:
+          border-color 0.3s,
+          background 0.3s;
+      }
+
+      .card.pump.on .icon {
+        border-color: #0040ff55;
+        background: #0040ff11;
+      }
+      .card.uv.on .icon {
+        border-color: #8800ff55;
+        background: #8800ff11;
+      }
+
+      .pill {
+        font-size: 10px;
+        letter-spacing: 0.2em;
+        padding: 3px 10px;
+        border-radius: 2px;
+        border: 1px solid #222;
+        color: #333;
+        text-transform: uppercase;
+        transition: all 0.2s;
+      }
+
+      .card.pump.on .pill {
+        color: #4488ff;
+        border-color: #0040ff44;
+      }
+      .card.uv.on .pill {
+        color: #aa44ff;
+        border-color: #8800ff44;
+      }
+
+      .status {
+        font-size: 10px;
+        letter-spacing: 0.2em;
+        color: #333;
+      }
+
+      .status.connected {
+        color: #2a7a2a;
+      }
+      .status.error {
+        color: #7a2a2a;
+      }
+
+      .card:active {
+        transform: scale(0.98);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Relay Controller</h1>
+
+    <div class="grid">
+      <div class="card pump" id="pump-card" onclick="toggle('pump')">
+        <div class="label">Motor</div>
+        <div class="icon" id="pump-icon">💧</div>
+        <div class="pill" id="pump-pill">OFF</div>
+      </div>
+
+      <div class="card uv" id="uv-card" onclick="toggle('uv')">
+        <div class="label">UV Light</div>
+        <div class="icon" id="uv-icon">🔦</div>
+        <div class="pill" id="uv-pill">OFF</div>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 0.75rem">
+      <div class="status" id="status">connecting...</div>
+      <button
+        onclick="reconnect()"
+        id="reload-btn"
+        style="
+          font-family: &quot;Courier New&quot;, monospace;
+          font-size: 10px;
+          letter-spacing: 0.2em;
+          text-transform: uppercase;
+          background: none;
+          border: 1px solid #222;
+          color: #333;
+          padding: 3px 10px;
+          border-radius: 2px;
+          cursor: pointer;
+        "
+      >
+        reload
+      </button>
+    </div>
+
+    <script>
+      const SUPABASE_URL = "https://gczdqvhncwqnafhebcja.supabase.co";
+      const SUPABASE_ANON = "sb_publishable_xA4swFAKNGXmeBaJN2fJ3g_qKsqIW0y";
+
+      const { createClient } = supabase;
+      const db = createClient(SUPABASE_URL, SUPABASE_ANON);
+
+      let state = { pump: false, uv: false };
+
+      function render() {
+        ["pump", "uv"].forEach((k) => {
+          const on = state[k];
+          document.getElementById(`${k}-card`).className =
+            `card ${k}${on ? " on" : ""}`;
+          document.getElementById(`${k}-pill`).textContent = on ? "ON" : "OFF";
+        });
+      }
+
+      async function toggle(key) {
+        const next = !state[key];
+        state[key] = next;
+        render();
+        const { error } = await db
+          .from("relay_state")
+          .update({ [key]: next })
+          .eq("id", 1);
+        if (error) {
+          state[key] = !next;
+          render();
+          document.getElementById("status").textContent = "update failed";
+          document.getElementById("status").className = "status error";
+        }
+      }
+
+      async function load() {
+        const { data, error } = await db
+          .from("relay_state")
+          .select("pump,uv")
+          .eq("id", 1)
+          .single();
+        if (error) {
+          document.getElementById("status").textContent = "connection failed";
+          document.getElementById("status").className = "status error";
+          return;
+        }
+        state = { pump: data.pump, uv: data.uv };
+        render();
+        document.getElementById("status").textContent = "connected";
+        document.getElementById("status").className = "status connected";
+      }
+
+      let channel;
+
+      function reconnect() {
+        document.getElementById("status").textContent = "connecting...";
+        document.getElementById("status").className = "status";
+        if (channel) db.removeChannel(channel);
+        subscribe();
+        load();
+      }
+
+      function subscribe() {
+        channel = db
+          .channel("relay")
+          .on(
+            "postgres_changes",
+            {
+              event: "UPDATE",
+              schema: "public",
+              table: "relay_state",
+            },
+            (payload) => {
+              state = { pump: payload.new.pump, uv: payload.new.uv };
+              render();
+            },
+          )
+          .subscribe();
+      }
+
+      load();
+
+      subscribe();
+    </script>
+  </body>
+</html>
