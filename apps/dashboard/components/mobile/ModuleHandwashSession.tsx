@@ -33,10 +33,11 @@ const WHO_ZONES: number[][] = [
   [0],                 // 6: wrist
 ];
 
-const UV_DURATION_MS = 5000;
-const DETECT_HOLD_MS = 1500;   // hold in corner
-const ABSENT_HOLD_MS = 3000;   // hands absent → UV on
-const UV_WAIT_HOLD_MS = 1000;  // both hands back → start scan
+const UV_DURATION_MS   = 10_000;
+const DETECT_HOLD_MS   = 1500;    // hold in corner to activate pump
+const ABSENT_HOLD_MS   = 5_000;   // both hands absent before UV kicks in
+const UV_WAIT_HOLD_MS  = 1_000;   // both hands back before scan starts
+const PUMP_DURATION_S  = 7;       // pump on duration (seconds)
 
 declare global {
   interface Window {
@@ -128,7 +129,8 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
   const [newlyScored,   setNewlyScored]   = useState<number|null>(null);
   const [uvProgress,    setUvProgress]    = useState(0);
   const [detectProgress,setDetectProgress]= useState(0);
-  const [absentProgress,setAbsentProgress]= useState(0); // 0-1 for the 3s absent countdown
+  const [absentProgress,setAbsentProgress]= useState(0);
+  const [isPortrait,    setIsPortrait]    = useState(false);
 
   const transitionStage = useCallback((next: SessionStage) => {
     stageRef.current = next;
@@ -361,22 +363,25 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
     };
   }, [handleResults, moduleId, transitionStage]);
 
-  // Landscape orientation lock for the duration of the session
+  // Portrait detection — show rotate overlay instead of relying on JS lock API
   useEffect(() => {
-    const lock = async () => {
-      try { await (screen.orientation as any).lock("landscape"); } catch {} // eslint-disable-line @typescript-eslint/no-explicit-any
-    };
-    lock();
+    const mq = window.matchMedia("(orientation: portrait)");
+    const onChange = (e: MediaQueryListEvent | MediaQueryList) => setIsPortrait(e.matches);
+    onChange(mq);
+    mq.addEventListener("change", onChange);
+    // Best-effort JS lock (works on Android standalone PWA; silently ignored elsewhere)
+    try { (screen.orientation as any).lock("landscape").catch(() => {}); } catch {} // eslint-disable-line @typescript-eslint/no-explicit-any
     return () => {
+      mq.removeEventListener("change", onChange);
       try { screen.orientation.unlock(); } catch {}
     };
   }, []);
 
-  // Pump countdown — 3-2-1 when stage is pump_countdown
+  // Pump countdown — counts down PUMP_DURATION_S seconds then off
   useEffect(() => {
     if (stage !== "pump_countdown") return;
-    setPumpCountdown(3);
-    let count = 3;
+    setPumpCountdown(PUMP_DURATION_S);
+    let count = PUMP_DURATION_S;
     const iv = setInterval(() => {
       count--;
       setPumpCountdown(count);
@@ -401,6 +406,17 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
 
   return (
     <div className="fixed inset-0 bg-black z-[100] flex flex-col">
+      {/* Portrait-mode gate — shown whenever device is held vertically */}
+      {isPortrait && (
+        <div className="absolute inset-0 bg-slate-900 z-[200] flex flex-col items-center justify-center gap-5 px-8">
+          <span className="text-6xl" style={{ transform: "rotate(90deg)", display: "inline-block" }}>📱</span>
+          <p className="text-white font-black text-2xl text-center">Rotate your device</p>
+          <p className="text-white/60 text-sm text-center leading-relaxed">
+            The handwashing session requires landscape orientation for the camera to track your hands properly.
+          </p>
+        </div>
+      )}
+
       <video ref={videoRef} playsInline muted className="hidden" />
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover" />
 

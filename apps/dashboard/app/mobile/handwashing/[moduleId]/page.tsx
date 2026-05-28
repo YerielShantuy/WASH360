@@ -238,7 +238,7 @@ export default function HandwashingPage() {
 
           <motion.button
             whileTap={{ scale: 0.96 }} transition={spring}
-            onClick={() => router.push("/mobile")}
+            onClick={() => window.location.replace("/mobile")}
             className="w-full h-[54px] rounded-[20px] bg-white/10 text-white font-black text-base border border-white/10"
           >
             Done
