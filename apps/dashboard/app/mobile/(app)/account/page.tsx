@@ -1,8 +1,9 @@
-import { Star, Flame, Trophy, Gift, Bell, MapPin, Moon, Info, ChevronRight, Store } from "lucide-react";
+import { Star, Flame, Trophy } from "lucide-react";
 import Link from "next/link";
 import { createServerClient } from "@/lib/supabase-server";
 import { redirect } from "next/navigation";
 import SignOutButton from "@/components/mobile/SignOutButton";
+import SettingsMenuClient from "@/components/mobile/SettingsModals";
 import type { ProfileRow, ModuleRow } from "@/lib/db.types";
 
 export default async function AccountPage() {
@@ -18,14 +19,12 @@ export default async function AccountPage() {
     .eq("id", session.user.id)
     .single() as { data: Pick<ProfileRow, "username" | "total_points" | "streak_count" | "level" | "role"> | null };
 
-  const profile = profileRaw;
-  const username = profile?.username ?? "User";
-  const points = profile?.total_points ?? 0;
-  const streak = profile?.streak_count ?? 0;
-  const level = profile?.level ?? 1;
-  const isVenueOwner = profile?.role === "venue_owner" || profile?.role === "admin";
+  const username = profileRaw?.username ?? "User";
+  const points = profileRaw?.total_points ?? 0;
+  const streak = profileRaw?.streak_count ?? 0;
+  const level = profileRaw?.level ?? 1;
+  const isVenueOwner = profileRaw?.role === "venue_owner" || profileRaw?.role === "admin";
 
-  // Fetch owned modules if venue_owner
   let ownedModule: Pick<ModuleRow, "id" | "venue_name"> | null = null;
   if (isVenueOwner) {
     const { data: ownership } = await db
@@ -34,7 +33,6 @@ export default async function AccountPage() {
       .eq("user_id", session.user.id)
       .limit(1)
       .maybeSingle() as { data: { module_id: string } | null };
-
     if (ownership) {
       const { data: mod } = await db
         .from("modules")
@@ -45,19 +43,19 @@ export default async function AccountPage() {
     }
   }
 
-  const MENU = [
+  const menuItems = [
     ...(isVenueOwner ? [{
-      icon: Store,
+      id: null as null,
+      icon: "🏪",
       label: "My Venue",
       href: ownedModule ? `/mobile/venue/${ownedModule.id}` : "/mobile/venue/demo-module",
       hint: ownedModule?.venue_name ?? "Demo Venue",
-      highlight: true,
     }] : []),
-    { icon: Gift, label: "Rewards", href: "/mobile/vouchers", hint: `${points.toLocaleString()} pts`, highlight: false },
-    { icon: Bell, label: "Notifications", href: null, hint: null, highlight: false },
-    { icon: MapPin, label: "Location & Privacy", href: null, hint: null, highlight: false },
-    { icon: Moon, label: "Appearance", href: null, hint: null, highlight: false },
-    { icon: Info, label: "About WASH360", href: null, hint: null, highlight: false },
+    { id: null as null, icon: "🎁", label: "Rewards", href: "/mobile/vouchers", hint: `${points.toLocaleString()} pts` },
+    { id: "notifications" as const, icon: "🔔", label: "Notifications", href: null, hint: null },
+    { id: "location" as const, icon: "📍", label: "Location & Privacy", href: null, hint: null },
+    { id: "appearance" as const, icon: "🌙", label: "Appearance", href: null, hint: null },
+    { id: "about" as const, icon: "ℹ️", label: "About WASH360", href: null, hint: null },
   ];
 
   return (
@@ -98,39 +96,20 @@ export default async function AccountPage() {
       </div>
 
       <div className="flex flex-col gap-3 p-4">
-        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-          {MENU.map((item, i) => (
-            <div key={item.label}>
-              {i > 0 && <div className="h-px bg-slate-50 ml-14" />}
-              {item.href ? (
-                <Link
-                  href={item.href}
-                  className={`flex items-center gap-4 px-4 py-4 active:bg-slate-50 ${item.highlight ? "bg-sky-50/50" : ""}`}
-                >
-                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${item.highlight ? "bg-sky-100" : "bg-sky-50"}`}>
-                    <item.icon size={18} className={item.highlight ? "text-sky-700" : "text-sky-600"} />
-                  </div>
-                  <span className={`flex-1 font-semibold text-sm ${item.highlight ? "text-sky-800" : "text-slate-800"}`}>{item.label}</span>
-                  {item.hint && (
-                    <span className="text-sky-600 text-xs font-bold bg-sky-50 px-2 py-0.5 rounded-full">{item.hint}</span>
-                  )}
-                  <ChevronRight size={16} className="text-slate-300" />
-                </Link>
-              ) : (
-                <div className="flex items-center gap-4 px-4 py-4">
-                  <div className="w-9 h-9 rounded-xl bg-slate-50 flex items-center justify-center">
-                    <item.icon size={18} className="text-slate-400" />
-                  </div>
-                  <span className="flex-1 text-slate-500 font-semibold text-sm">{item.label}</span>
-                  <ChevronRight size={16} className="text-slate-200" />
-                </div>
-              )}
-            </div>
-          ))}
+        {/* Edit profile link */}
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm">
+          <Link href="/mobile/account/edit" className="flex items-center gap-4 px-4 py-4 active:bg-slate-50">
+            <div className="w-9 h-9 rounded-xl bg-sky-50 flex items-center justify-center text-lg">✏️</div>
+            <span className="flex-1 font-semibold text-sm text-slate-800">Edit Profile</span>
+            <span className="text-slate-300 text-xs">Change name &amp; avatar</span>
+          </Link>
         </div>
 
+        {/* Settings menu — client component for modal interactivity */}
+        <SettingsMenuClient menuItems={menuItems} />
+
         <SignOutButton />
-        <p className="text-center text-slate-300 text-xs pb-4">WASH360 · v1.0</p>
+        <p className="text-center text-slate-300 text-xs pb-4">WASH360 · v1.0 · Sydney, NSW</p>
       </div>
     </div>
   );

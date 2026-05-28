@@ -1,21 +1,22 @@
 export const DEMO_PROFILE = {
   id: "demo-user-001",
-  username: "Yeriel",
+  username: "Alex",
   total_points: 1250,
   streak_count: 7,
   level: 5,
 };
 
 export const DEMO_EVENTS = [
-  { id: "e1", title: "Monas Canal Cleanup", date: "2026-06-01", location: "Monas, Jakarta Pusat", attendees: 34, category: "cleanup" },
-  { id: "e2", title: "Handwashing Drive – SD Negeri 05", date: "2026-06-03", location: "Gambir", attendees: 12, category: "hygiene" },
-  { id: "e3", title: "Water Quality Testing Day", date: "2026-06-07", location: "Kali Ciliwung", attendees: 20, category: "water" },
+  { id: "e1", title: "Bondi Beach Cleanup", date: "2026-06-07", location: "Bondi Beach, NSW", attendees: 34, category: "cleanup" },
+  { id: "e2", title: "Handwashing Drive – Alexandria Primary", date: "2026-06-10", location: "Alexandria, NSW", attendees: 12, category: "hygiene" },
+  { id: "e3", title: "Parramatta River Water Testing", date: "2026-06-14", location: "Parramatta, NSW", attendees: 20, category: "water" },
+  { id: "e4", title: "Manly Cove Rubbish Pick-Up", date: "2026-06-21", location: "Manly, NSW", attendees: 28, category: "cleanup" },
 ];
 
 export const DEMO_WATER_QUALITY = [
-  { id: "w1", location: "Monas Tap", score: 82, label: "Good" },
-  { id: "w2", location: "Kali Ciliwung", score: 45, label: "Poor" },
-  { id: "w3", location: "PAM Jatinegara", score: 91, label: "Excellent" },
+  { id: "w1", location: "Bondi Beach Tap", score: 88, label: "Good" },
+  { id: "w2", location: "Parramatta River", score: 52, label: "Fair" },
+  { id: "w3", location: "Sydney Harbour", score: 79, label: "Good" },
 ];
 
 export const DEMO_BINGO_CELLS = [
@@ -31,23 +32,23 @@ export const DEMO_BINGO_CELLS = [
 ];
 
 export const DEMO_LEADERBOARD = [
-  { rank: 1, username: "siti_jakarta", points: 4200, level: 8, isMe: false },
-  { rank: 2, username: "budi_clean", points: 3850, level: 7, isMe: false },
-  { rank: 3, username: "rini_wash", points: 3200, level: 7, isMe: false },
-  { rank: 4, username: "adi_green", points: 2780, level: 6, isMe: false },
-  { rank: 5, username: "Yeriel", points: 1250, level: 5, isMe: true },
-  { rank: 6, username: "dewi_eco", points: 1100, level: 4, isMe: false },
-  { rank: 7, username: "farid_care", points: 980, level: 4, isMe: false },
-  { rank: 8, username: "nisa_river", points: 870, level: 3, isMe: false },
-  { rank: 9, username: "tommy_h2o", points: 760, level: 3, isMe: false },
-  { rank: 10, username: "yanti_bersih", points: 650, level: 3, isMe: false },
+  { rank: 1, username: "ocean_alice", points: 4200, level: 8, isMe: false },
+  { rank: 2, username: "clean_ben", points: 3850, level: 7, isMe: false },
+  { rank: 3, username: "sophie_wash", points: 3200, level: 7, isMe: false },
+  { rank: 4, username: "green_tom", points: 2780, level: 6, isMe: false },
+  { rank: 5, username: "Alex", points: 1250, level: 5, isMe: true },
+  { rank: 6, username: "emma_eco", points: 1100, level: 4, isMe: false },
+  { rank: 7, username: "liam_care", points: 980, level: 4, isMe: false },
+  { rank: 8, username: "mia_river", points: 870, level: 3, isMe: false },
+  { rank: 9, username: "noah_h2o", points: 760, level: 3, isMe: false },
+  { rank: 10, username: "chloe_clean", points: 650, level: 3, isMe: false },
 ];
 
 export const DEMO_VOUCHERS = [
-  { id: "v1", title: "Free Mie Goreng", partner: "Warung Pak Budi", points_cost: 300, category: "food", description: "Redeem for one free portion of mie goreng at any participating outlet.", stock: 15 },
-  { id: "v2", title: "10% off Groceries", partner: "Indomaret", points_cost: 500, category: "shopping", description: "10% discount on any grocery purchase above Rp 50,000.", stock: 8 },
-  { id: "v3", title: "Free Water Test Kit", partner: "WASH360 Lab", points_cost: 200, category: "health", description: "Claim a free household water testing kit — valid 30 days.", stock: 50 },
-  { id: "v4", title: "GoRide Credit Rp 10k", partner: "Gojek", points_cost: 800, category: "transport", description: "Rp 10,000 GoRide credit for your next eco-friendly commute.", stock: 5 },
+  { id: "v1", title: "Free Coffee", partner: "The Grounds Alexandria", points_cost: 300, category: "food", description: "Redeem for one free flat white at The Grounds of Alexandria. Valid weekdays.", stock: 15 },
+  { id: "v2", title: "10% off Groceries", partner: "Woolworths", points_cost: 500, category: "shopping", description: "10% discount on any grocery purchase over $30 at participating Woolworths.", stock: 8 },
+  { id: "v3", title: "Free Water Test Kit", partner: "WASH360 Lab", points_cost: 200, category: "health", description: "Claim a free household water testing kit — valid 30 days from redemption.", stock: 50 },
+  { id: "v4", title: "$5 Opal Top-Up", partner: "Transport NSW", points_cost: 800, category: "transport", description: "$5 credit added to a registered Opal card for eco-friendly public transport.", stock: 5 },
 ];
 
 export const DEMO_REPORT_TYPES = [

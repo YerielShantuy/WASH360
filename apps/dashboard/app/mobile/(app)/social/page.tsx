@@ -116,7 +116,7 @@ function EventsTab({ myId }: { myId: string }) {
   function locationStr(loc: unknown): string {
     if (typeof loc === "string") return loc;
     if (loc && typeof loc === "object" && "name" in loc) return String((loc as {name: unknown}).name);
-    return "Jakarta";
+    return "Sydney, NSW";
   }
 
   return (
@@ -208,10 +208,6 @@ function EventsTab({ myId }: { myId: string }) {
                 <div className="flex items-center gap-2 mt-1.5">
                   <span className="text-slate-400 text-xs">
                     {new Date(ev.event_date).toLocaleDateString("en-AU", { day: "numeric", month: "short" })}
-                  </span>
-                  <span className="text-slate-200">·</span>
-                  <span className="text-slate-400 text-xs flex items-center gap-1">
-                    <MapPin size={10} />{locationStr(ev.location)}
                   </span>
                 </div>
               </div>

@@ -1,102 +1,87 @@
 "use client";
-import { useState, useEffect, useRef, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
-import { motion, AnimatePresence } from "framer-motion";
-import { X, CheckCircle, Loader2, Smartphone } from "lucide-react";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { motion } from "framer-motion";
+import { CheckCircle, Loader2, X } from "lucide-react";
 import { createClient } from "@/lib/supabase";
 import { triggerPointsFloat } from "@/components/mobile/PointsFloatOverlay";
 import dynamic from "next/dynamic";
+import { Suspense } from "react";
 
 const spring = { type: "spring" as const, stiffness: 200, damping: 15 };
 
-// Dynamic import — camera+WASM should not SSR
 const HandwashingCamera = dynamic(
   () => import("@/components/mobile/HandwashingCamera"),
   { ssr: false, loading: () => null }
 );
 
-// WHO 7-step sequence — used in fallback timer mode
-const STEPS = [
-  { id: 1, title: "Palm to Palm", desc: "Rub palms together in circular motion", emoji: "🤲", durationSec: 3 },
-  { id: 2, title: "Back of Hands", desc: "Interlace fingers and rub the back of each hand", emoji: "🙌", durationSec: 3 },
-  { id: 3, title: "Interlaced Fingers", desc: "Interlace fingers and rub palms together", emoji: "🤝", durationSec: 3 },
-  { id: 4, title: "Backs of Fingers", desc: "Lock fingers and rub knuckles against opposite palm", emoji: "✊", durationSec: 3 },
-  { id: 5, title: "Rotational Thumbs", desc: "Clasp thumb and rotate in circular motion", emoji: "👍", durationSec: 3 },
-  { id: 6, title: "Fingertip on Palm", desc: "Rub fingertips in a rotational movement on opposite palm", emoji: "☝️", durationSec: 3 },
-  { id: 7, title: "Wrists", desc: "Rub each wrist with the opposite hand", emoji: "💪", durationSec: 3 },
-] as const;
+type Stage = "camera" | "scoring" | "result";
 
-type Stage = "nfc" | "camera" | "timer" | "scoring" | "result";
-
-export default function HandwashingPage() {
+function HandwashingContent() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const moduleId = params.moduleId as string;
 
-  const [stage, setStage] = useState<Stage>("nfc");
+  const [stage, setStage] = useState<Stage>("camera");
   const [score, setScore] = useState(0);
   const [points, setPoints] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [cooldownActive, setCooldownActive] = useState(false);
+  const [completedSteps, setCompletedSteps] = useState<boolean[]>(Array(7).fill(false));
+  const [latherSec, setLatherSec] = useState(0);
   const nfcAbortRef = useRef<AbortController | null>(null);
 
-  // Timer-mode state (fallback when camera/ML unavailable)
-  const [currentStep, setCurrentStep] = useState(0);
-  const [stepTimer, setStepTimer] = useState(0);
-  const [completedSteps, setCompletedSteps] = useState<boolean[]>(Array(7).fill(false));
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const stepRef = useRef(currentStep);
-  stepRef.current = currentStep;
-
-  // ── Timer-mode step loop ──
+  // NFC Web API — silent background scan while on camera screen
   useEffect(() => {
-    if (stage !== "timer") return;
-    setStepTimer(0);
-    timerRef.current = setInterval(() => {
-      setStepTimer((t) => {
-        const required = STEPS[stepRef.current].durationSec;
-        if (t + 1 >= required) {
-          setCompletedSteps((prev) => {
-            const next = [...prev];
-            next[stepRef.current] = true;
-            return next;
-          });
-          clearInterval(timerRef.current!);
-          setTimeout(() => {
-            if (stepRef.current < STEPS.length - 1) {
-              setCurrentStep((s) => s + 1);
-            } else {
-              // All timer steps done — score = 98 (no ML bonus)
-              handleScoring(Array(7).fill(true), 98);
-            }
-          }, 600);
-          return required;
-        }
-        return t + 1;
-      });
-    }, 1000);
-    return () => clearInterval(timerRef.current!);
-  }, [stage, currentStep]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (stage !== "camera") return;
+    if (typeof window === "undefined") return;
+    const NDEFReader = (window as any).NDEFReader; // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (!NDEFReader) return;
 
-  // ── Scoring + DB submission ──
-  const handleScoring = useCallback(
-    async (completed: boolean[], rawScore: number) => {
+    const controller = new AbortController();
+    nfcAbortRef.current = controller;
+
+    const reader = new NDEFReader();
+    reader.scan({ signal: controller.signal })
+      .then(() => {
+        reader.addEventListener("reading", (event: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+          controller.abort();
+          // If tag encodes a different module, navigate there
+          const record = event.message?.records?.[0];
+          if (record?.recordType === "url" || record?.recordType === "U") {
+            try {
+              const url = new TextDecoder().decode(record.data);
+              const match = url.match(/\/handwashing\/([^/?#]+)/);
+              if (match && match[1] !== moduleId) {
+                router.replace(`/mobile/handwashing/${match[1]}`);
+                return;
+              }
+            } catch {}
+          }
+          // Same module — already on camera, nothing to do
+        }, { once: true });
+      })
+      .catch(() => {});
+
+    return () => controller.abort();
+  }, [stage, moduleId, router]);
+
+  const handleComplete = useCallback(
+    async (completed: boolean[], rawScore: number, latheringMs: number) => {
       const earnedPoints = Math.round(rawScore * 1.5);
       setScore(rawScore);
       setPoints(earnedPoints);
+      setCompletedSteps(completed);
+      setLatherSec(Math.floor(latheringMs / 1000));
       setStage("scoring");
       setSubmitting(true);
 
       try {
         const supabase = createClient();
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        if (!session) {
-          setSubmitting(false);
-          setStage("result");
-          return;
-        }
+        const { data: { session } } = await supabase.auth.getSession();
+
+        if (!session) { setSubmitting(false); setStage("result"); return; }
 
         const now = new Date();
         const fourHoursAgo = new Date(now.getTime() - 4 * 60 * 60 * 1000).toISOString();
@@ -105,7 +90,6 @@ export default function HandwashingPage() {
           ? "00000000-0000-0000-0000-000000000000"
           : moduleId;
 
-        // 4-hour cooldown check
         const { data: recent } = await (supabase as any)
           .from("handwash_sessions")
           .select("id")
@@ -130,7 +114,7 @@ export default function HandwashingPage() {
           coverage_score: null,
           total_points: earnedPoints,
           session_type: "module",
-          duration_seconds: completedCount * 20,
+          duration_seconds: Math.floor(latheringMs / 1000),
           cooldown_active: false,
         });
 
@@ -142,9 +126,7 @@ export default function HandwashingPage() {
           p_source: "handwash",
           p_reference: `handwash-${Date.now()}`,
         });
-      } catch {
-        // Best-effort — still show result even if DB fails
-      }
+      } catch {}
 
       setSubmitting(false);
       setStage("result");
@@ -152,227 +134,17 @@ export default function HandwashingPage() {
     [moduleId]
   );
 
-  // ── Web NFC scan (Chrome Android only) ──
-  useEffect(() => {
-    if (stage !== "nfc") return;
-    if (typeof window === "undefined") return;
-    const NDEFReader = (window as any).NDEFReader; // eslint-disable-line @typescript-eslint/no-explicit-any
-    if (!NDEFReader) return;
-
-    const controller = new AbortController();
-    nfcAbortRef.current = controller;
-
-    const reader = new NDEFReader();
-    reader.scan({ signal: controller.signal })
-      .then(() => {
-        reader.addEventListener("reading", (event: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
-          controller.abort();
-          // If the tag encodes a different module URL, navigate there instead
-          const record = event.message?.records?.[0];
-          if (record?.recordType === "url" || record?.recordType === "U") {
-            try {
-              const decoder = new TextDecoder();
-              const url = decoder.decode(record.data);
-              const match = url.match(/\/handwashing\/([^/?#]+)/);
-              if (match && match[1] !== moduleId) {
-                router.replace(`/mobile/handwashing/${match[1]}`);
-                return;
-              }
-            } catch {}
-          }
-          setStage("camera");
-        }, { once: true });
-      })
-      .catch(() => {}); // permission denied or unsupported — silent
-
-    return () => controller.abort();
-  }, [stage]);
-
-  // ── Camera ML complete callback ──
-  const handleCameraComplete = useCallback(
-    (completed: boolean[], mlScore: number) => {
-      handleScoring(completed, mlScore);
-    },
-    [handleScoring]
-  );
-
-  // ── NFC / Entry stage ──
-  if (stage === "nfc") {
-    return (
-      <div className="fixed inset-0 bg-slate-900 z-[100] flex flex-col items-center justify-center px-6 gap-8">
-        <button
-          onClick={() => router.back()}
-          className="absolute top-[calc(env(safe-area-inset-top)+16px)] right-4 w-11 h-11 flex items-center justify-center"
-          aria-label="Close"
-        >
-          <X size={24} className="text-white/60" />
-        </button>
-
-        <motion.div
-          animate={{ scale: [1, 1.08, 1] }}
-          transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
-          className="w-32 h-32 rounded-full bg-sky-600/20 flex items-center justify-center"
-        >
-          <div className="w-20 h-20 rounded-full bg-sky-600/40 flex items-center justify-center">
-            <Smartphone size={36} className="text-sky-300" />
-          </div>
-        </motion.div>
-
-        <div className="text-center">
-          <h1 className="font-black text-3xl text-white leading-tight mb-2">Ready to Wash?</h1>
-          <p className="text-white/60 text-sm leading-relaxed">
-            Hold your phone to the NFC module to begin,
-            <br />
-            or tap below to start with hand-tracking
-          </p>
-        </div>
-
-        <div className="w-full max-w-xs flex flex-col gap-3">
-          <motion.button
-            whileTap={{ scale: 0.96 }}
-            transition={spring}
-            onClick={() => setStage("camera")}
-            className="w-full h-[56px] rounded-[20px] bg-sky-600 text-white font-black text-lg shadow-[0px_4px_0px_rgba(0,0,0,0.20),0px_8px_20px_rgba(2,132,199,0.40)]"
-          >
-            Start with Camera 📷
-          </motion.button>
-          <motion.button
-            whileTap={{ scale: 0.96 }}
-            transition={spring}
-            onClick={() => setStage("timer")}
-            className="w-full h-[48px] rounded-[20px] bg-white/10 text-white/80 font-bold text-sm"
-          >
-            Use Timer Instead
-          </motion.button>
-          <p className="text-white/30 text-xs text-center">NFC auto-start on Android Chrome</p>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Camera ML stage ──
+  // Camera stage — full screen, starts immediately
   if (stage === "camera") {
     return (
       <HandwashingCamera
-        onComplete={handleCameraComplete}
+        onComplete={handleComplete}
         onExit={() => router.back()}
-        onFallbackToTimer={() => {
-          setCurrentStep(0);
-          setCompletedSteps(Array(7).fill(false));
-          setStage("timer");
-        }}
       />
     );
   }
 
-  // ── Timer fallback stage ──
-  if (stage === "timer") {
-    const step = STEPS[currentStep];
-    const progress = stepTimer / step.durationSec;
-    const radius = 44;
-    const circumference = 2 * Math.PI * radius;
-    const dashOffset = circumference * (1 - progress);
-
-    return (
-      <div className="fixed inset-0 bg-slate-900/95 z-[100] flex flex-col">
-        {/* Step progress bar */}
-        <div
-          className="absolute left-4 right-14 flex gap-1.5"
-          style={{ top: "calc(env(safe-area-inset-top) + 16px)" }}
-        >
-          {STEPS.map((s, i) => (
-            <div
-              key={s.id}
-              className={`flex-1 h-1 rounded-full transition-colors ${
-                completedSteps[i] ? "bg-amber-400" : i === currentStep ? "bg-white/60" : "bg-white/20"
-              }`}
-            />
-          ))}
-        </div>
-
-        <button
-          onClick={() => router.back()}
-          className="absolute right-4 w-11 h-11 flex items-center justify-center z-10"
-          style={{ top: "calc(env(safe-area-inset-top) + 8px)" }}
-          aria-label="Close"
-        >
-          <X size={22} className="text-white/60" />
-        </button>
-
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={currentStep}
-            initial={{ opacity: 0, x: 40 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -40 }}
-            transition={spring}
-            className="flex-1 flex flex-col items-center justify-center px-6 gap-6"
-          >
-            <div className="w-40 h-40 rounded-[48px] bg-white/10 flex items-center justify-center">
-              <span className="text-7xl">{step.emoji}</span>
-            </div>
-
-            <div className="text-center">
-              <p className="text-white/50 text-xs font-bold uppercase tracking-widest mb-1">
-                Step {step.id} of 7
-              </p>
-              <h2 className="font-black text-2xl text-white mb-2">{step.title}</h2>
-              <p className="text-white/60 text-sm leading-relaxed max-w-xs">{step.desc}</p>
-            </div>
-
-            {/* Circular countdown */}
-            <div className="relative w-24 h-24">
-              <svg width="96" height="96" className="-rotate-90">
-                <circle cx="48" cy="48" r={radius} fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="4" />
-                <circle
-                  cx="48"
-                  cy="48"
-                  r={radius}
-                  fill="none"
-                  stroke="#F59E0B"
-                  strokeWidth="4"
-                  strokeLinecap="round"
-                  strokeDasharray={circumference}
-                  strokeDashoffset={dashOffset}
-                  className="transition-all duration-1000"
-                />
-              </svg>
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="font-black text-2xl text-white">
-                  {Math.max(0, step.durationSec - stepTimer)}
-                </span>
-              </div>
-            </div>
-          </motion.div>
-        </AnimatePresence>
-
-        <div className="absolute bottom-8 left-4 right-4">
-          <motion.button
-            whileTap={{ scale: 0.96 }}
-            transition={spring}
-            onClick={() => {
-              setCompletedSteps((prev) => {
-                const next = [...prev];
-                next[currentStep] = true;
-                return next;
-              });
-              clearInterval(timerRef.current!);
-              if (currentStep < STEPS.length - 1) {
-                setCurrentStep((s) => s + 1);
-              } else {
-                handleScoring(Array(7).fill(true), 98);
-              }
-            }}
-            className="w-full h-[56px] rounded-[20px] bg-amber-400 text-white font-black text-lg shadow-[0px_4px_0px_rgba(0,0,0,0.15),0px_8px_20px_rgba(245,158,11,0.40)]"
-          >
-            {currentStep < STEPS.length - 1 ? "Skip to Next Step" : "Finish Washing"}
-          </motion.button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Scoring / loading ──
+  // Scoring / saving
   if (stage === "scoring") {
     return (
       <div className="fixed inset-0 bg-slate-900/95 z-[100] flex flex-col items-center justify-center gap-4">
@@ -384,84 +156,111 @@ export default function HandwashingPage() {
     );
   }
 
-  // ── Result ──
-  return (
-    <div className="fixed inset-0 bg-slate-900/95 z-[100] flex flex-col items-center justify-center px-6 gap-6">
-      <motion.div
-        initial={{ scale: 0.5, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        transition={spring}
-        className="flex flex-col items-center gap-6 w-full max-w-sm"
-      >
-        {cooldownActive ? (
-          <>
-            <div className="w-24 h-24 rounded-full bg-amber-500/20 flex items-center justify-center">
-              <span className="text-5xl">⏳</span>
-            </div>
-            <div className="text-center">
-              <h2 className="font-black text-2xl text-white mb-2">Cooldown Active</h2>
-              <p className="text-white/60 text-sm leading-relaxed">
-                You can use this module again in 4 hours.
-                <br />
-                Great job staying hygienic!
-              </p>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="w-24 h-24 rounded-full bg-emerald-500/20 flex items-center justify-center">
-              <CheckCircle size={52} className="text-emerald-400" />
-            </div>
-            <div className="text-center">
-              <h2 className="font-black text-3xl text-white mb-1">Nice wash!</h2>
-              <p className="text-white/50 text-sm">WHO 7-step technique scored</p>
-            </div>
+  // Result
+  const WHO_STEP_LABELS = [
+    "Palm to Palm", "Fingers Interlaced", "Palm over Back",
+    "Backs of Fingers", "Rotational Thumbs", "Fingertips on Palm", "Wrists",
+  ];
 
-            {/* Score breakdown */}
-            <div className="w-full bg-white/10 rounded-[24px] p-5 flex flex-col gap-3">
-              <div className="flex justify-between items-center">
-                <span className="text-white/60 text-sm">Technique Score</span>
-                <span className="font-black text-2xl text-white">{score}/100</span>
+  return (
+    <div className="fixed inset-0 bg-slate-900/95 z-[100] overflow-y-auto">
+      <div className="flex flex-col items-center px-6 py-12 gap-6 min-h-full justify-center">
+        <motion.div
+          initial={{ scale: 0.5, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={spring}
+          className="flex flex-col items-center gap-6 w-full max-w-sm"
+        >
+          {cooldownActive ? (
+            <>
+              <div className="w-24 h-24 rounded-full bg-amber-500/20 flex items-center justify-center">
+                <span className="text-5xl">⏳</span>
               </div>
-              <div className="w-full h-2 bg-white/20 rounded-full overflow-hidden">
-                <motion.div
-                  initial={{ width: 0 }}
-                  animate={{ width: `${score}%` }}
-                  transition={{ duration: 0.8, ease: "easeOut" }}
-                  className={`h-full rounded-full ${score >= 90 ? "bg-emerald-400" : score >= 70 ? "bg-amber-400" : "bg-sky-400"}`}
-                />
+              <div className="text-center">
+                <h2 className="font-black text-2xl text-white mb-2">Cooldown Active</h2>
+                <p className="text-white/60 text-sm leading-relaxed">
+                  You can use this module again in 4 hours.
+                  Great job staying hygienic!
+                </p>
               </div>
-              <div className="flex justify-between items-center pt-1">
-                <span className="text-white/60 text-sm">Steps Detected</span>
-                <span className="font-bold text-white">
-                  {completedSteps.filter(Boolean).length}/7
-                </span>
+            </>
+          ) : (
+            <>
+              <div className="w-24 h-24 rounded-full bg-emerald-500/20 flex items-center justify-center">
+                <CheckCircle size={52} className="text-emerald-400" />
               </div>
+              <div className="text-center">
+                <h2 className="font-black text-3xl text-white mb-1">
+                  {score >= 90 ? "Perfect! 🎉" : score >= 60 ? "Great job! 👏" : "Good start! 💧"}
+                </h2>
+                <p className="text-white/50 text-sm">{latherSec}s lathering time</p>
+              </div>
+
+              {/* Score circle */}
+              <div className="relative w-32 h-32">
+                <svg width="128" height="128" className="-rotate-90">
+                  <circle cx="64" cy="64" r="56" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="8" />
+                  <circle
+                    cx="64" cy="64" r="56" fill="none"
+                    stroke={score >= 90 ? "#10B981" : score >= 60 ? "#F59E0B" : "#38bdf8"}
+                    strokeWidth="8" strokeLinecap="round"
+                    strokeDasharray={`${2 * Math.PI * 56}`}
+                    strokeDashoffset={`${2 * Math.PI * 56 * (1 - score / 100)}`}
+                  />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <p className="font-black text-3xl text-white leading-none">{score}</p>
+                  <p className="text-white/40 text-xs">/ 100</p>
+                </div>
+              </div>
+
+              {/* Points badge */}
+              <div className="bg-amber-400/20 border border-amber-400/30 rounded-2xl px-8 py-3 text-center">
+                <p className="text-amber-300 font-black text-2xl">+{points} pts</p>
+                <p className="text-amber-400/60 text-xs">Credited to your account</p>
+              </div>
+
+              {/* Step breakdown */}
+              <div className="w-full bg-white/5 rounded-2xl p-4 grid grid-cols-2 gap-2">
+                {WHO_STEP_LABELS.map((label, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <div className={`w-4 h-4 rounded-full flex items-center justify-center flex-none ${completedSteps[i] ? "bg-emerald-500" : "bg-white/10"}`}>
+                      {completedSteps[i] && <CheckCircle size={10} className="text-white" />}
+                    </div>
+                    <span className={`text-xs leading-tight ${completedSteps[i] ? "text-white/80" : "text-white/30"}`}>{label}</span>
+                  </div>
+                ))}
+              </div>
+
               {score === 100 && (
-                <p className="text-amber-400 text-xs font-bold text-center mt-1">
-                  🌟 Perfect technique! +2 bonus pts
+                <p className="text-emerald-400 font-bold text-sm text-center">
+                  🏆 Perfect technique — all 7 WHO steps completed!
                 </p>
               )}
-            </div>
+            </>
+          )}
 
-            <div className="bg-emerald-500/20 rounded-[20px] px-6 py-4 w-full text-center">
-              <p className="font-black text-3xl text-emerald-400">+{points} pts</p>
-              <p className="text-emerald-300/70 text-xs mt-0.5">
-                {submitting ? "Saving…" : "Credited to your account"}
-              </p>
-            </div>
-          </>
-        )}
-
-        <motion.button
-          whileTap={{ scale: 0.96 }}
-          transition={spring}
-          onClick={() => router.push("/mobile")}
-          className="w-full h-[56px] rounded-[20px] bg-sky-600 text-white font-black text-lg shadow-[0px_4px_0px_rgba(0,0,0,0.20),0px_8px_20px_rgba(2,132,199,0.40)]"
-        >
-          Back to Home
-        </motion.button>
-      </motion.div>
+          <motion.button
+            whileTap={{ scale: 0.96 }} transition={spring}
+            onClick={() => router.back()}
+            className="w-full h-[54px] rounded-[20px] bg-white/10 text-white font-black text-base border border-white/10"
+          >
+            Done
+          </motion.button>
+        </motion.div>
+      </div>
     </div>
+  );
+}
+
+export default function HandwashingPage() {
+  return (
+    <Suspense fallback={
+      <div className="fixed inset-0 bg-slate-900 z-[100] flex items-center justify-center">
+        <Loader2 size={36} className="text-sky-400 animate-spin" />
+      </div>
+    }>
+      <HandwashingContent />
+    </Suspense>
   );
 }
