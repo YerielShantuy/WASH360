@@ -178,76 +178,67 @@ export default function HandwashingPage() {
           transition={spring}
           className="flex flex-col items-center gap-6 w-full max-w-sm"
         >
+          <div className="w-24 h-24 rounded-full bg-emerald-500/20 flex items-center justify-center">
+            <CheckCircle size={52} className="text-emerald-400" />
+          </div>
+          <div className="text-center">
+            <h2 className="font-black text-3xl text-white mb-1">
+              {score >= 90 ? "Perfect! 🎉" : score >= 60 ? "Great job! 👏" : "Good start! 💧"}
+            </h2>
+            <p className="text-white/50 text-sm">{latherSec}s lathering time</p>
+          </div>
+
+          {/* Score ring */}
+          <div className="relative w-32 h-32">
+            <svg width="128" height="128" className="-rotate-90">
+              <circle cx="64" cy="64" r="56" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="8" />
+              <circle
+                cx="64" cy="64" r="56" fill="none"
+                stroke={score >= 90 ? "#10B981" : score >= 60 ? "#F59E0B" : "#38bdf8"}
+                strokeWidth="8" strokeLinecap="round"
+                strokeDasharray={`${2 * Math.PI * 56}`}
+                strokeDashoffset={`${2 * Math.PI * 56 * (1 - score / 100)}`}
+              />
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+              <p className="font-black text-3xl text-white leading-none">{score}</p>
+              <p className="text-white/40 text-xs">/ 100</p>
+            </div>
+          </div>
+
           {cooldownActive ? (
-            <>
-              <div className="w-24 h-24 rounded-full bg-amber-500/20 flex items-center justify-center">
-                <span className="text-5xl">⏳</span>
-              </div>
-              <div className="text-center">
-                <h2 className="font-black text-2xl text-white mb-2">Cooldown Active</h2>
-                <p className="text-white/60 text-sm leading-relaxed">
-                  You can earn points from this module again in 4 hours. Great job staying hygienic!
-                </p>
-              </div>
-            </>
+            <div className="bg-amber-500/20 border border-amber-500/30 rounded-2xl px-6 py-3 text-center w-full">
+              <p className="text-amber-300 font-bold text-sm">⏳ Cooldown Active</p>
+              <p className="text-amber-400/70 text-xs mt-1">Points already earned from this module in the last 4 hours. Come back later!</p>
+            </div>
           ) : (
-            <>
-              <div className="w-24 h-24 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                <CheckCircle size={52} className="text-emerald-400" />
-              </div>
-              <div className="text-center">
-                <h2 className="font-black text-3xl text-white mb-1">
-                  {score >= 90 ? "Perfect! 🎉" : score >= 60 ? "Great job! 👏" : "Good start! 💧"}
-                </h2>
-                <p className="text-white/50 text-sm">{latherSec}s lathering time</p>
-              </div>
+            <div className="bg-amber-400/20 border border-amber-400/30 rounded-2xl px-8 py-3 text-center">
+              <p className="text-amber-300 font-black text-2xl">+{points} pts</p>
+              <p className="text-amber-400/60 text-xs">Credited to your account</p>
+            </div>
+          )}
 
-              {/* Score ring */}
-              <div className="relative w-32 h-32">
-                <svg width="128" height="128" className="-rotate-90">
-                  <circle cx="64" cy="64" r="56" fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="8" />
-                  <circle
-                    cx="64" cy="64" r="56" fill="none"
-                    stroke={score >= 90 ? "#10B981" : score >= 60 ? "#F59E0B" : "#38bdf8"}
-                    strokeWidth="8" strokeLinecap="round"
-                    strokeDasharray={`${2 * Math.PI * 56}`}
-                    strokeDashoffset={`${2 * Math.PI * 56 * (1 - score / 100)}`}
-                  />
-                </svg>
-                <div className="absolute inset-0 flex flex-col items-center justify-center">
-                  <p className="font-black text-3xl text-white leading-none">{score}</p>
-                  <p className="text-white/40 text-xs">/ 100</p>
+          {/* Step breakdown */}
+          <div className="w-full bg-white/5 rounded-2xl p-4 grid grid-cols-2 gap-2">
+            {WHO_STEP_LABELS.map((label, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <div className={`w-4 h-4 rounded-full flex items-center justify-center flex-none ${completedSteps[i] ? "bg-emerald-500" : "bg-white/10"}`}>
+                  {completedSteps[i] && <CheckCircle size={10} className="text-white" />}
                 </div>
+                <span className={`text-xs leading-tight ${completedSteps[i] ? "text-white/80" : "text-white/30"}`}>{label}</span>
               </div>
+            ))}
+          </div>
 
-              <div className="bg-amber-400/20 border border-amber-400/30 rounded-2xl px-8 py-3 text-center">
-                <p className="text-amber-300 font-black text-2xl">+{points} pts</p>
-                <p className="text-amber-400/60 text-xs">Credited to your account</p>
-              </div>
-
-              {/* Step breakdown */}
-              <div className="w-full bg-white/5 rounded-2xl p-4 grid grid-cols-2 gap-2">
-                {WHO_STEP_LABELS.map((label, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <div className={`w-4 h-4 rounded-full flex items-center justify-center flex-none ${completedSteps[i] ? "bg-emerald-500" : "bg-white/10"}`}>
-                      {completedSteps[i] && <CheckCircle size={10} className="text-white" />}
-                    </div>
-                    <span className={`text-xs leading-tight ${completedSteps[i] ? "text-white/80" : "text-white/30"}`}>{label}</span>
-                  </div>
-                ))}
-              </div>
-
-              {score === 100 && (
-                <p className="text-emerald-400 font-bold text-sm text-center">
-                  🏆 Perfect technique — all 7 WHO steps completed!
-                </p>
-              )}
-            </>
+          {score === 100 && (
+            <p className="text-emerald-400 font-bold text-sm text-center">
+              🏆 Perfect technique — all 7 WHO steps completed!
+            </p>
           )}
 
           <motion.button
             whileTap={{ scale: 0.96 }} transition={spring}
-            onClick={() => router.back()}
+            onClick={() => router.push("/mobile")}
             className="w-full h-[54px] rounded-[20px] bg-white/10 text-white font-black text-base border border-white/10"
           >
             Done
