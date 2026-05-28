@@ -1,4 +1,7 @@
 import MobileBottomNav from "@/components/mobile/BottomNav";
+import OnboardingSlides from "@/components/mobile/OnboardingSlides";
+import PointsFloatOverlay from "@/components/mobile/PointsFloatOverlay";
+import PwaInstallBanner from "@/components/mobile/PwaInstallBanner";
 
 export default function MobileAppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -7,6 +10,9 @@ export default function MobileAppLayout({ children }: { children: React.ReactNod
         {children}
       </main>
       <MobileBottomNav />
+      <OnboardingSlides />
+      <PointsFloatOverlay />
+      <PwaInstallBanner />
     </>
   );
 }

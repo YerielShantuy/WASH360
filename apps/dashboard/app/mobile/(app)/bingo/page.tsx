@@ -5,10 +5,14 @@ import { useSearchParams } from "next/navigation";
 import { ChevronLeft, CheckCircle, Plus, Trophy, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { createClient } from "@/lib/supabase";
+import { triggerPointsFloat } from "@/components/mobile/PointsFloatOverlay";
+import { enqueue, flushQueue } from "@/lib/offline-queue";
+import dynamic from "next/dynamic";
+
+const CameraCapture = dynamic(() => import("@/components/mobile/CameraCapture"), { ssr: false });
 
 const spring = { type: "spring" as const, stiffness: 200, damping: 15 };
 
-// 4×4 grid — 16 categories
 const DEFAULT_CATEGORIES = [
   "Plastic Bottle", "Food Wrapper", "Cigarette Butt", "Glass Shard",
   "Styrofoam", "Cardboard", "Metal Can", "Plastic Bag",
@@ -16,15 +20,13 @@ const DEFAULT_CATEGORIES = [
   "Bottle Cap", "Tin Foil", "Foam Container", "Fishing Line",
 ];
 
-// All lines for 4×4 bingo (rows, cols, diagonals)
 const BINGO_LINES = [
-  // Rows
   [0,1,2,3],[4,5,6,7],[8,9,10,11],[12,13,14,15],
-  // Columns
   [0,4,8,12],[1,5,9,13],[2,6,10,14],[3,7,11,15],
-  // Diagonals
   [0,5,10,15],[3,6,9,12],
 ];
+
+const MAX_EXTRA = 5;
 
 type CellStatus = "unclaimed" | "submitted" | "verified" | "rejected";
 type Cell = { category: string; status: CellStatus };
@@ -37,8 +39,13 @@ function BingoContent() {
   const [cardId, setCardId] = useState<string | null>(null);
   const [zoneName, setZoneName] = useState("Trash Bingo");
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState<number | null>(null);
   const [showBingo, setShowBingo] = useState(false);
+
+  // Camera state
+  const [pendingCellIdx, setPendingCellIdx] = useState<number | null>(null);
+  const [pendingExtra, setPendingExtra] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [extraCount, setExtraCount] = useState(0);
 
   const submitted = cells.filter((c) => c.status !== "unclaimed").length;
   const bingoLines = BINGO_LINES.filter((line) =>
@@ -60,16 +67,16 @@ function BingoContent() {
 
       const { data: existing } = await db
         .from("bingo_cards")
-        .select("id, cells")
+        .select("id, cells, extra_submissions_count")
         .eq("user_id", userId)
         .eq("zone_id", zoneId)
         .is("completed_at", null)
-        .maybeSingle() as { data: { id: string; cells: Cell[] } | null };
+        .maybeSingle() as { data: { id: string; cells: Cell[]; extra_submissions_count: number } | null };
 
       if (existing) {
         setCardId(existing.id);
+        setExtraCount(existing.extra_submissions_count ?? 0);
         const savedCells = existing.cells ?? [];
-        // Pad/extend to 16 cells if it was saved as 3×3
         const normalized: Cell[] = DEFAULT_CATEGORIES.map((cat, i) =>
           savedCells[i] ?? { category: cat, status: "unclaimed" }
         );
@@ -84,60 +91,153 @@ function BingoContent() {
         if (created) { setCardId(created.id); setCells(newCells); }
       }
     } else {
-      // Demo / no zone — just show the grid
       if (zoneId?.startsWith("demo") || zoneId) setZoneName("Demo Zone");
       setCells(DEFAULT_CATEGORIES.map((c) => ({ category: c, status: "unclaimed" })));
     }
     setLoading(false);
+
+    // Flush any queued offline submissions
+    if (navigator.onLine) {
+      const supabase2 = createClient();
+      flushQueue(supabase2).catch(() => {});
+    }
   }, [zoneId]);
 
   useEffect(() => { loadCard(); }, [loadCard]);
 
-  // Show BINGO celebration when first line is completed
+  // Re-flush queue when coming back online
+  useEffect(() => {
+    function onOnline() {
+      const supabase = createClient();
+      flushQueue(supabase).catch(() => {});
+    }
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, []);
+
   useEffect(() => {
     if (hasBingo && !showBingo) setShowBingo(true);
   }, [hasBingo, showBingo]);
 
-  async function tapCell(idx: number) {
-    if (cells[idx]?.status !== "unclaimed" || submitting !== null) return;
-    setSubmitting(idx);
+  function tapCell(idx: number) {
+    if (cells[idx]?.status !== "unclaimed") return;
+    setPendingCellIdx(idx);
+    setPendingExtra(false);
+    setCameraOpen(true);
+  }
+
+  function tapExtraFab() {
+    if (extraCount >= MAX_EXTRA) return;
+    setPendingCellIdx(null);
+    setPendingExtra(true);
+    setCameraOpen(true);
+  }
+
+  async function handleCapture(dataUrl: string) {
+    setCameraOpen(false);
+
+    const supabase = createClient();
+    const { data: { session } } = await supabase.auth.getSession();
+    const db = supabase as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+    const photoHash = `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    if (pendingExtra) {
+      // Extra trash submission
+      const newCount = extraCount + 1;
+      setExtraCount(newCount);
+
+      if (cardId && session) {
+        const insertData = {
+          card_id: cardId,
+          user_id: session.user.id,
+          category: "Extra Trash",
+          photo_path: "web-demo/extra.jpg",
+          photo_hash: photoHash,
+          ml_confidence: 0.85,
+          item_count: 1,
+          is_extra: true,
+          status: "pending",
+          points_awarded: 10,
+          location: null,
+          synced_at: new Date().toISOString(),
+        };
+
+        if (navigator.onLine) {
+          try {
+            await db.from("bingo_submissions").insert(insertData);
+            await db.from("bingo_cards").update({ extra_submissions_count: newCount }).eq("id", cardId);
+            await db.rpc("award_points", { p_user_id: session.user.id, p_amount: 10, p_source: "bingo_extra", p_reference: cardId });
+            triggerPointsFloat(10);
+          } catch {}
+        } else {
+          await enqueue({
+            card_id: cardId,
+            user_id: session?.user.id ?? "",
+            category: "Extra Trash",
+            photo_data_url: dataUrl,
+            photo_hash: photoHash,
+            item_count: 1,
+            is_extra: true,
+            points_awarded: 10,
+            queued_at: new Date().toISOString(),
+          });
+          triggerPointsFloat(10);
+        }
+      }
+
+      setPendingExtra(false);
+      return;
+    }
+
+    if (pendingCellIdx === null) return;
+    const idx = pendingCellIdx;
+    setPendingCellIdx(null);
 
     const newCells = cells.map((c, i) =>
       i === idx ? { ...c, status: "submitted" as CellStatus } : c
     );
+    setCells(newCells);
 
-    if (cardId) {
-      const supabase = createClient();
-      const { data: { session } } = await supabase.auth.getSession();
-      const db = supabase as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (cardId && session) {
+      const submissionData = {
+        card_id: cardId,
+        user_id: session.user.id,
+        category: cells[idx].category,
+        photo_path: "web-demo/placeholder.jpg",
+        photo_hash: photoHash,
+        ml_confidence: 0.85,
+        item_count: 1,
+        is_extra: false,
+        status: "pending",
+        points_awarded: 25,
+        location: null,
+        synced_at: new Date().toISOString(),
+      };
 
-      if (session) {
-        await db.from("bingo_cards").update({ cells: newCells }).eq("id", cardId);
-        await db.from("bingo_submissions").insert({
+      if (navigator.onLine) {
+        try {
+          await db.from("bingo_cards").update({ cells: newCells }).eq("id", cardId);
+          await db.from("bingo_submissions").insert(submissionData);
+          await db.rpc("award_points", { p_user_id: session.user.id, p_amount: 25, p_source: "bingo", p_reference: cardId });
+          triggerPointsFloat(25);
+        } catch {}
+      } else {
+        // Optimistic update already applied; queue submission for later
+        await enqueue({
           card_id: cardId,
           user_id: session.user.id,
           category: cells[idx].category,
-          photo_path: "web-demo/placeholder.jpg",
-          photo_hash: `demo-${Date.now()}-${idx}`,
-          ml_confidence: 0.85,
+          photo_data_url: dataUrl,
+          photo_hash: photoHash,
           item_count: 1,
           is_extra: false,
-          status: "pending",
           points_awarded: 25,
-          location: null,
-          synced_at: new Date().toISOString(),
+          queued_at: new Date().toISOString(),
         });
-        await db.rpc("award_points", {
-          p_user_id: session.user.id,
-          p_amount: 25,
-          p_source: "bingo",
-          p_reference: cardId,
-        });
+        triggerPointsFloat(25);
       }
     }
-
-    setCells(newCells);
-    setSubmitting(null);
   }
 
   if (loading) {
@@ -209,20 +309,16 @@ function BingoContent() {
               whileTap={{ scale: 0.92 }}
               transition={spring}
               onClick={() => tapCell(i)}
-              disabled={cell.status !== "unclaimed" || submitting !== null}
+              disabled={cell.status !== "unclaimed"}
               className={`
                 aspect-square rounded-[22px] flex flex-col items-center justify-center gap-1 p-1.5 shadow-sm
                 transition-all duration-200 disabled:cursor-default
                 ${cell.status !== "unclaimed"
                   ? "bg-emerald-500 shadow-emerald-200 border-2 border-emerald-400"
-                  : submitting === i
-                  ? "bg-sky-50"
                   : "bg-white border border-slate-100"}
               `}
             >
-              {submitting === i ? (
-                <Loader2 size={16} className="text-sky-500 animate-spin" />
-              ) : cell.status !== "unclaimed" ? (
+              {cell.status !== "unclaimed" ? (
                 <CheckCircle size={18} className="text-white" />
               ) : (
                 <Plus size={14} className="text-slate-300" />
@@ -251,7 +347,7 @@ function BingoContent() {
         <div className="bg-sky-50 rounded-2xl p-4 border border-sky-100">
           <p className="text-sky-800 font-bold text-sm mb-1">How to Play</p>
           <p className="text-sky-700 text-xs leading-relaxed">
-            Tap a cell when you find that type of trash. Get 4 in a row — across, down, or diagonal — to BINGO! Each item earns +25 pts.
+            Tap a cell when you find that type of trash, then photograph it. Get 4 in a row — across, down, or diagonal — to BINGO! Each item earns +25 pts.
           </p>
         </div>
       </div>
@@ -260,12 +356,31 @@ function BingoContent() {
       <motion.button
         whileTap={{ scale: 0.90 }}
         transition={spring}
-        className="fixed right-4 z-40 w-14 h-14 rounded-full bg-amber-400 shadow-[0px_4px_0px_rgba(0,0,0,0.12),0px_8px_20px_rgba(245,158,11,0.35)] flex items-center justify-center"
+        onClick={tapExtraFab}
+        disabled={extraCount >= MAX_EXTRA}
+        className={`fixed right-4 z-40 w-14 h-14 rounded-full shadow-[0px_4px_0px_rgba(0,0,0,0.12),0px_8px_20px_rgba(245,158,11,0.35)] flex items-center justify-center transition-opacity ${extraCount >= MAX_EXTRA ? "opacity-40" : "bg-amber-400"}`}
         style={{ bottom: "calc(80px + env(safe-area-inset-bottom) + 16px)" }}
-        title="Add extra trash item"
+        title={extraCount >= MAX_EXTRA ? "Max extra trash reached" : `Add extra trash item (${extraCount}/${MAX_EXTRA})`}
       >
         <Plus size={26} className="text-white" strokeWidth={2.5} />
       </motion.button>
+      {extraCount > 0 && extraCount < MAX_EXTRA && (
+        <div
+          className="fixed right-3 z-40 w-5 h-5 rounded-full bg-red-500 flex items-center justify-center"
+          style={{ bottom: "calc(80px + env(safe-area-inset-bottom) + 44px)" }}
+        >
+          <span className="text-white text-[10px] font-black">{extraCount}</span>
+        </div>
+      )}
+
+      {/* Camera modal */}
+      <CameraCapture
+        open={cameraOpen}
+        onCapture={handleCapture}
+        onClose={() => { setCameraOpen(false); setPendingCellIdx(null); setPendingExtra(false); }}
+        instruction={pendingExtra ? "Photograph the extra trash item" : pendingCellIdx !== null ? `Photograph: ${cells[pendingCellIdx]?.category ?? ""}` : ""}
+        facingMode="environment"
+      />
     </div>
   );
 }

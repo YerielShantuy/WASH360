@@ -1,8 +1,12 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
-import { ChevronLeft, MapPin, Camera, CheckCircle, Loader2 } from "lucide-react";
+import { ChevronLeft, MapPin, Camera, CheckCircle, Loader2, X } from "lucide-react";
 import { createClient } from "@/lib/supabase";
+import { triggerPointsFloat } from "@/components/mobile/PointsFloatOverlay";
+import dynamic from "next/dynamic";
+
+const CameraCapture = dynamic(() => import("@/components/mobile/CameraCapture"), { ssr: false });
 
 const REPORT_TYPES = [
   { id: "illegal_dumping", label: "Illegal Dumping", emoji: "🗑️", dbType: "clogged_drain" as const },
@@ -23,6 +27,8 @@ export default function ReportPage() {
   const [severity, setSeverity] = useState<"low" | "medium" | "high">("medium");
   const [desc, setDesc] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
 
   async function submit() {
     const selected = REPORT_TYPES.find((r) => r.id === type);
@@ -54,6 +60,7 @@ export default function ReportPage() {
       p_source: "report",
       p_reference: `report-${Date.now()}`,
     });
+    triggerPointsFloat(50);
 
     setStage("done");
   }
@@ -155,12 +162,28 @@ export default function ReportPage() {
           />
         </div>
 
-        {/* Photo placeholder */}
-        <div className="bg-white rounded-2xl border border-dashed border-slate-200 p-6 flex flex-col items-center gap-2">
-          <Camera size={28} className="text-slate-300" />
-          <p className="text-slate-400 text-sm font-medium">Add a photo</p>
-          <p className="text-slate-300 text-xs">Photo upload coming soon</p>
-        </div>
+        {/* Photo capture */}
+        {photoUrl ? (
+          <div className="relative rounded-2xl overflow-hidden">
+            <img src={photoUrl} alt="Report photo" className="w-full h-44 object-cover rounded-2xl" />
+            <button
+              onClick={() => setPhotoUrl(null)}
+              className="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/50 flex items-center justify-center"
+            >
+              <X size={14} className="text-white" />
+            </button>
+            <div className="absolute bottom-2 left-2 bg-black/50 text-white text-xs font-semibold px-2 py-1 rounded-full">Photo added ✓</div>
+          </div>
+        ) : (
+          <button
+            onClick={() => setCameraOpen(true)}
+            className="w-full bg-white rounded-2xl border border-dashed border-slate-200 p-6 flex flex-col items-center gap-2 active:bg-slate-50"
+          >
+            <Camera size={28} className="text-sky-400" />
+            <p className="text-slate-600 text-sm font-semibold">Add a photo</p>
+            <p className="text-slate-400 text-xs">Tap to open camera</p>
+          </button>
+        )}
 
         <button
           onClick={submit}
@@ -170,6 +193,14 @@ export default function ReportPage() {
           Submit Report · +50 pts
         </button>
       </div>
+
+      <CameraCapture
+        open={cameraOpen}
+        onCapture={(dataUrl) => { setPhotoUrl(dataUrl); setCameraOpen(false); }}
+        onClose={() => setCameraOpen(false)}
+        instruction="Photograph the issue clearly"
+        facingMode="environment"
+      />
     </div>
   );
 }
