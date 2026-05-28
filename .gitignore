@@ -1,0 +1,53 @@
+# ── Dependencies ──────────────────────────────────────────────────────────────
+node_modules
+.pnp
+.pnp.js
+package-lock.json
+
+# ── Turborepo ─────────────────────────────────────────────────────────────────
+.turbo
+
+# ── Next.js ───────────────────────────────────────────────────────────────────
+.next
+out
+apps/dashboard/tsconfig.tsbuildinfo
+
+# ── Expo / React Native ───────────────────────────────────────────────────────
+.expo
+apps/mobile/dist
+apps/mobile/web-build
+apps/mobile/android
+apps/mobile/ios
+
+# ── Build outputs ─────────────────────────────────────────────────────────────
+dist
+build
+*.tsbuildinfo
+
+# ── Environment (NEVER commit secrets) ────────────────────────────────────────
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# ── Claude Code internal ──────────────────────────────────────────────────────
+.claude
+CLAUDE.md
+AGENTS.md
