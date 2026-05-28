@@ -1,168 +1,188 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { corsHeaders, handleCors } from "../_shared/cors.ts";
 
-// TACO dataset category → bingo cell category mapping
-const TACO_TO_BINGO: Record<string, string> = {
-  "Plastic bottle": "plastic_bottle",
-  "Plastic bag & wrapper": "plastic_bag",
-  "Drink can": "aluminium_can",
-  "Food Can": "aluminium_can",
-  "Paper cup": "paper_cup",
-  "Styrofoam piece": "styrofoam",
-  "Cigarette": "cigarette",
-  "Glass bottle": "glass_bottle",
-  "Carton": "cardboard",
-  "Newspaper & magazine": "paper",
-  "Blister pack": "plastic_other",
-  "Plastic container": "plastic_other",
-  "Straw": "plastic_straw",
+// Keywords matched against Google Vision labels (case-insensitive substring)
+const CATEGORY_KEYWORDS: Record<string, string[]> = {
+  "Plastic Bottle":  ["bottle", "plastic bottle", "water bottle", "beverage bottle", "soda bottle", "pet bottle"],
+  "Food Wrapper":    ["wrapper", "snack", "food packaging", "candy", "cellophane", "packaging", "sachet", "chips"],
+  "Cigarette Butt":  ["cigarette", "tobacco", "smoking", "cigarette butt", "filter tip", "ashtray"],
+  "Glass Shard":     ["glass", "shard", "broken glass", "glass fragment", "glass bottle"],
+  "Styrofoam":       ["styrofoam", "polystyrene", "expanded polystyrene", "eps"],
+  "Cardboard":       ["cardboard", "carton", "corrugated", "paperboard", "cardboard box"],
+  "Metal Can":       ["can", "tin", "aluminum can", "aluminium can", "beverage can", "drink can", "soda can"],
+  "Plastic Bag":     ["bag", "plastic bag", "shopping bag", "carrier bag", "poly bag", "grocery bag"],
+  "Paper Cup":       ["cup", "paper cup", "disposable cup", "coffee cup", "takeaway cup"],
+  "Rubber":          ["rubber", "tire", "tyre", "rubber band", "latex", "elastic"],
+  "Nappy/Diaper":    ["diaper", "nappy", "baby", "absorbent", "pampers"],
+  "Straw":           ["straw", "drinking straw", "plastic straw"],
+  "Bottle Cap":      ["cap", "lid", "bottle cap", "closure", "stopper", "crown cap"],
+  "Tin Foil":        ["foil", "aluminum foil", "aluminium foil", "tin foil", "cooking foil"],
+  "Foam Container":  ["container", "foam container", "takeaway box", "takeout", "clamshell", "food container"],
+  "Fishing Line":    ["fishing", "fishing line", "fishing net", "monofilament", "rope", "cord", "net"],
+  "Extra Trash":     ["trash", "waste", "litter", "garbage", "rubbish", "debris", "refuse", "pollution"],
 };
 
-interface VisionLabel {
-  description: string;
-  score: number;
-  topicality?: number;
-}
+// Any of these in Vision labels = something that looks like trash was detected
+const GENERAL_WASTE = [
+  "trash", "waste", "litter", "garbage", "rubbish", "debris", "pollution",
+  "disposable", "single-use", "refuse", "recycle", "recyclable",
+];
 
+interface VisionLabel    { description: string; score: number }
+interface VisionObject   { name: string; score: number; boundingPoly?: { normalizedVertices: { x: number; y: number }[] } }
 interface VisionResponse {
   responses: Array<{
-    labelAnnotations?: VisionLabel[];
+    labelAnnotations?:        VisionLabel[];
+    localizedObjectAnnotations?: VisionObject[];
     error?: { message: string };
   }>;
 }
 
-async function callGoogleVision(
-  base64Image: string,
-  apiKey: string
-): Promise<VisionLabel[]> {
+async function callGoogleVision(base64Image: string, apiKey: string): Promise<{
+  labels:   VisionLabel[];
+  objects:  VisionObject[];
+}> {
   const res = await fetch(
     `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        requests: [
-          {
-            image: { content: base64Image },
-            features: [{ type: "LABEL_DETECTION", maxResults: 15 }],
-          },
-        ],
+        requests: [{
+          image: { content: base64Image },
+          features: [
+            { type: "LABEL_DETECTION",    maxResults: 20 },
+            { type: "OBJECT_LOCALIZATION", maxResults: 10 },
+          ],
+        }],
       }),
     }
   );
   if (!res.ok) throw new Error(`Vision API HTTP ${res.status}`);
   const json: VisionResponse = await res.json();
-  if (json.responses[0]?.error) throw new Error(json.responses[0].error.message);
-  return json.responses[0]?.labelAnnotations ?? [];
+  const r = json.responses[0];
+  if (r?.error) throw new Error(r.error.message);
+  return {
+    labels:  r?.labelAnnotations            ?? [],
+    objects: r?.localizedObjectAnnotations  ?? [],
+  };
 }
 
-function matchCategory(labels: VisionLabel[]): {
-  category: string | null;
-  confidence: number;
-  item_count: number;
-} {
-  let bestCategory: string | null = null;
-  let bestConfidence = 0;
+function matchCategory(
+  labels:   VisionLabel[],
+  objects:  VisionObject[],
+  expected: string
+): { matched: boolean; confidence: number; bounding_box: object | null } {
+  const keywords = CATEGORY_KEYWORDS[expected] ?? [];
 
-  for (const label of labels) {
-    const mapped = TACO_TO_BINGO[label.description];
-    if (mapped && label.score > bestConfidence) {
-      bestCategory = mapped;
-      bestConfidence = label.score;
+  // Combine labels + object names into a single scored list
+  const allDetections: { text: string; score: number }[] = [
+    ...labels.map(l  => ({ text: l.description.toLowerCase(), score: l.score })),
+    ...objects.map(o => ({ text: o.name.toLowerCase(),         score: o.score })),
+  ];
+
+  // Find the highest-confidence label that matches any keyword
+  let bestScore = 0;
+  for (const kw of keywords) {
+    for (const d of allDetections) {
+      if (d.text.includes(kw.toLowerCase()) && d.score > bestScore) {
+        bestScore = d.score;
+      }
     }
   }
 
-  // Fallback: check for generic waste keywords
-  if (!bestCategory) {
-    const wasteKeywords = ["trash", "waste", "litter", "garbage", "rubbish", "debris"];
-    for (const label of labels) {
-      if (wasteKeywords.some((kw) => label.description.toLowerCase().includes(kw))) {
-        bestCategory = "plastic_other";
-        bestConfidence = label.score * 0.8;
+  // For Extra Trash: accept any general waste label
+  if (expected === "Extra Trash" && bestScore === 0) {
+    for (const gw of GENERAL_WASTE) {
+      for (const d of allDetections) {
+        if (d.text.includes(gw) && d.score > bestScore) bestScore = d.score;
+      }
+    }
+  }
+
+  // Also accept if ANY label indicates this is trash (safety net)
+  let isTrash = bestScore > 0;
+  if (!isTrash) {
+    for (const gw of GENERAL_WASTE) {
+      if (allDetections.some(d => d.text.includes(gw) && d.score > 0.5)) {
+        isTrash = true;
+        bestScore = Math.max(bestScore, 0.55);
         break;
       }
     }
   }
 
-  // Estimate item count from "quantity" / "several" / number labels
-  let item_count = 1;
-  for (const label of labels) {
-    const desc = label.description.toLowerCase();
-    if (desc.includes("several") || desc.includes("multiple") || desc.includes("pile")) {
-      item_count = 3;
-      break;
-    }
-    if (desc.includes("many") || desc.includes("lots")) {
-      item_count = 5;
+  // Pull bounding box from the best matching localised object (if any)
+  let bounding_box: object | null = null;
+  for (const kw of keywords) {
+    const obj = objects.find(o => o.name.toLowerCase().includes(kw.toLowerCase()));
+    if (obj?.boundingPoly) {
+      bounding_box = obj.boundingPoly.normalizedVertices;
       break;
     }
   }
 
-  return { category: bestCategory, confidence: bestConfidence, item_count };
+  return { matched: bestScore > 0, confidence: bestScore, bounding_box };
 }
 
-// Local fallback when no API key is configured (dev / demo mode).
-// Returns a plausible result based on a hash of the image bytes.
-function localFallback(base64Image: string): {
-  category: string;
-  confidence: number;
-  item_count: number;
+// Deterministic-ish fallback for when no API key is set (dev/demo).
+function localFallback(base64Image: string, expected: string): {
+  matched: boolean; confidence: number; bounding_box: null;
 } {
-  const categories = Object.values(TACO_TO_BINGO);
-  const bytes = Uint8Array.from(atob(base64Image.slice(0, 400)), (c) =>
-    c.charCodeAt(0)
-  );
+  const bytes = Uint8Array.from(atob(base64Image.slice(0, 400)), c => c.charCodeAt(0));
   const hash = bytes.reduce((a, b) => (a * 31 + b) & 0xffff, 0);
-  const category = categories[hash % categories.length];
-  const confidence = 0.72 + (hash % 20) / 100;
-  return { category, confidence, item_count: 1 };
+  const confidence = 0.65 + (hash % 25) / 100;
+  // ~70% acceptance rate in fallback mode
+  const matched = (hash % 10) < 7;
+  void expected;
+  return { matched, confidence, bounding_box: null };
 }
 
 serve(async (req: Request) => {
-  const corsResponse = handleCors(req);
-  if (corsResponse) return corsResponse;
+  const cors = handleCors(req);
+  if (cors) return cors;
 
   try {
-    const {
-      image_base64,
-      expected_category,
-    }: {
+    const { image_base64, expected_category = "Extra Trash" }: {
       image_base64: string;
       expected_category?: string;
     } = await req.json();
 
-    const apiKey = Deno.env.get("GOOGLE_VISION_API_KEY");
-
-    let result: { category: string | null; confidence: number; item_count: number };
-
-    if (apiKey) {
-      const labels = await callGoogleVision(image_base64, apiKey);
-      result = matchCategory(labels);
-    } else {
-      result = localFallback(image_base64);
+    if (!image_base64) {
+      return new Response(JSON.stringify({ error: "image_base64 is required" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    const MIN_CONFIDENCE = 0.6;
-    const categoryMatches =
-      !expected_category || result.category === expected_category;
-    const isValid =
-      result.category !== null &&
-      result.confidence >= MIN_CONFIDENCE &&
-      categoryMatches;
+    const apiKey = Deno.env.get("GOOGLE_VISION_API_KEY");
+    const MIN_CONFIDENCE = 0.55;
+
+    let matched: boolean;
+    let confidence: number;
+    let bounding_box: object | null;
+
+    if (apiKey) {
+      const { labels, objects } = await callGoogleVision(image_base64, apiKey);
+      ({ matched, confidence, bounding_box } = matchCategory(labels, objects, expected_category));
+    } else {
+      ({ matched, confidence, bounding_box } = localFallback(image_base64, expected_category));
+    }
+
+    const accepted = matched && confidence >= MIN_CONFIDENCE;
 
     return new Response(
       JSON.stringify({
-        is_valid: isValid,
-        category: result.category,
-        confidence: result.confidence,
-        item_count: result.item_count,
-        reason: isValid
+        accepted,
+        is_valid:     accepted,             // legacy alias
+        category:     expected_category,
+        confidence,
+        bounding_box,
+        reason: accepted
           ? "ok"
-          : result.category === null
+          : !matched
           ? "no_trash_detected"
-          : result.confidence < MIN_CONFIDENCE
-          ? "low_confidence"
-          : "category_mismatch",
+          : "low_confidence",
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

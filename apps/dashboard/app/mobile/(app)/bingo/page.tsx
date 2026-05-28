@@ -136,22 +136,28 @@ function BingoContent() {
     setCameraOpen(true);
   }
 
-  // Simulated ML classification — replace with real Edge Function call
   async function classifyImage(dataUrl: string, expectedCategory: string): Promise<{ category: string; confidence: number; accepted: boolean }> {
     setAnalysing(true);
     try {
+      // Strip data URL prefix — edge function expects raw base64
+      const image_base64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
       const supabase = createClient();
-      const { data, error } = await (supabase as any).functions.invoke("classify-trash", {
-        body: { image: dataUrl, expected_category: expectedCategory },
+      const { data, error } = await (supabase as any).functions.invoke("validate-trash-photo", {
+        body: { image_base64, expected_category: expectedCategory },
       });
-      if (!error && data?.category) {
-        return { category: data.category, confidence: data.confidence ?? 0.85, accepted: data.accepted ?? true };
+      if (!error && data != null) {
+        return {
+          category:   data.category   ?? expectedCategory,
+          confidence: data.confidence ?? 0,
+          accepted:   data.accepted   ?? data.is_valid ?? false,
+        };
       }
-    } catch {}
-    // Fallback mock — randomise confidence for realism
-    await new Promise((r) => setTimeout(r, 900));
-    const confidence = 0.72 + Math.random() * 0.25;
-    return { category: expectedCategory, confidence, accepted: confidence > 0.55 };
+      console.error("[classify] edge function error:", error);
+    } catch (err) {
+      console.error("[classify] invoke failed:", err);
+    }
+    // Offline / error fallback — reject so user retries with a better photo
+    return { category: expectedCategory, confidence: 0, accepted: false };
   }
 
   async function handleCapture(dataUrl: string) {
@@ -411,6 +417,7 @@ function BingoContent() {
         onClose={() => { setCameraOpen(false); setPendingCellIdx(null); setPendingExtra(false); }}
         instruction={pendingExtra ? "Photograph the extra trash item" : pendingCellIdx !== null ? `Photograph: ${cells[pendingCellIdx]?.category ?? ""}` : ""}
         facingMode="environment"
+        showGuideBox
       />
 
       {/* ML analysing overlay */}
