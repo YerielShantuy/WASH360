@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
+import { X, Loader2, AlertCircle, CheckCircle2, FlipHorizontal } from "lucide-react";
 import { createHandwashScorer, HAND_CONNECTIONS, type Landmark } from "@/lib/handwash-scorer";
 
 const spring = { type: "spring" as const, stiffness: 200, damping: 15 };
@@ -42,9 +42,13 @@ interface MediaPipeResults {
   image: CanvasImageSource;
 }
 
-interface Props {
+export interface Props {
   onComplete: (completedSteps: boolean[], score: number, latheringMs: number) => void;
   onExit: () => void;
+  /** Allow front/back toggle — true for daily streak, false for module sessions */
+  allowCameraFlip?: boolean;
+  /** Fixed facing mode — used when allowCameraFlip is false */
+  facingMode?: "user" | "environment";
 }
 
 function loadScript(src: string): Promise<void> {
@@ -64,15 +68,27 @@ function fmtTime(ms: number) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-export default function HandwashingCamera({ onComplete, onExit }: Props) {
+export default function HandwashingCamera({
+  onComplete,
+  onExit,
+  allowCameraFlip = false,
+  facingMode: initialFacing = "environment",
+}: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const handsRef = useRef<MediaPipeHands | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const scorerRef = useRef(createHandwashScorer());
   const runningRef = useRef(true);
   const lastTimeRef = useRef(0);
 
+  // ── All scorer state kept in refs so handleResults stays stable ──
+  const scorerRef = useRef(createHandwashScorer());
+  const stepProgressRef = useRef<number[]>(Array(7).fill(0));
+  const scoredRef = useRef<boolean[]>(Array(7).fill(false));
+  const latheringMsRef = useRef(0);
+  const handsVisibleRef = useRef(false);
+
+  // UI state — updated via setState in handleResults, not causing effect re-runs
   const [status, setStatus] = useState<"loading" | "running" | "error">("loading");
   const [loadingMsg, setLoadingMsg] = useState("Starting camera…");
   const [stepProgress, setStepProgress] = useState<number[]>(Array(7).fill(0));
@@ -81,7 +97,10 @@ export default function HandwashingCamera({ onComplete, onExit }: Props) {
   const [handsVisible, setHandsVisible] = useState(false);
   const [newlyScored, setNewlyScored] = useState<number | null>(null);
   const [finishing, setFinishing] = useState(false);
+  const [facing, setFacing] = useState<"user" | "environment">(initialFacing);
+  const lastUiUpdateRef = useRef(0);
 
+  // Stable handleResults — reads from refs, not state
   const handleResults = useCallback((results: MediaPipeResults) => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
@@ -96,7 +115,7 @@ export default function HandwashingCamera({ onComplete, onExit }: Props) {
 
     const allHands: Landmark[][] = results.multiHandLandmarks ?? [];
 
-    // Draw skeleton
+    // Draw skeleton overlay
     for (const hand of allHands) {
       ctx.strokeStyle = "#38bdf8";
       ctx.lineWidth = 2.5;
@@ -117,28 +136,59 @@ export default function HandwashingCamera({ onComplete, onExit }: Props) {
       }
     }
 
+    // Process all steps simultaneously — reads/writes refs only
     const state = scorerRef.current.processFrame(allHands, deltaMs);
-    setStepProgress([...state.stepProgress]);
-    setLatheringMs(state.latheringMs);
-    setHandsVisible(state.handsVisible);
+    stepProgressRef.current = state.stepProgress;
+    latheringMsRef.current = state.latheringMs;
+    handsVisibleRef.current = state.handsVisible;
 
-    // Detect newly completed steps
-    const prev = scored;
+    // Detect newly completed steps (compare with ref, not state)
     state.scored.forEach((s, i) => {
-      if (s && !prev[i]) setNewlyScored(i);
+      if (s && !scoredRef.current[i]) {
+        setNewlyScored(i);
+      }
     });
-    setScored([...state.scored]);
-  }, [scored]);
+    scoredRef.current = state.scored;
 
+    // Batch UI updates at ~10fps to avoid hammering React
+    const now2 = performance.now();
+    if (now2 - lastUiUpdateRef.current > 100) {
+      lastUiUpdateRef.current = now2;
+      setStepProgress([...state.stepProgress]);
+      setScored([...state.scored]);
+      setLatheringMs(state.latheringMs);
+      setHandsVisible(state.handsVisible);
+    }
+  }, []); // ← stable: no state dependencies
+
+  // Camera init — only re-runs when `facing` changes (flip button) or on mount
   useEffect(() => {
+    let hands: MediaPipeHands | null = null;
+    runningRef.current = true;
+    scorerRef.current = createHandwashScorer(); // fresh scorer on flip
+    stepProgressRef.current = Array(7).fill(0);
+    scoredRef.current = Array(7).fill(false);
+    latheringMsRef.current = 0;
+    lastTimeRef.current = 0;
+
+    setStatus("loading");
+    setLoadingMsg("Starting camera…");
+    setStepProgress(Array(7).fill(0));
+    setScored(Array(7).fill(false));
+    setLatheringMs(0);
+    setHandsVisible(false);
+
     async function init() {
       try {
-        setLoadingMsg("Starting camera…");
-        // Back camera for handwashing
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: "environment" }, width: { ideal: 640 }, height: { ideal: 480 } },
+          video: {
+            facingMode: { ideal: facing },
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+          },
         });
         streamRef.current = stream;
+
         const video = videoRef.current;
         if (!video || !runningRef.current) return;
         video.srcObject = stream;
@@ -160,10 +210,10 @@ export default function HandwashingCamera({ onComplete, onExit }: Props) {
         }
         if (!window.Hands) throw new Error("MediaPipe not found");
 
-        const hands = new window.Hands({ locateFile: (f) => `${MEDIAPIPE_CDN}/${f}` });
+        hands = new window.Hands({ locateFile: (f) => `${MEDIAPIPE_CDN}/${f}` });
         hands.setOptions({
           maxNumHands: 2,
-          modelComplexity: 1, // higher accuracy for better vertical hand detection
+          modelComplexity: 1,
           minDetectionConfidence: 0.6,
           minTrackingConfidence: 0.5,
         });
@@ -185,19 +235,25 @@ export default function HandwashingCamera({ onComplete, onExit }: Props) {
     }
 
     init();
+
     return () => {
       runningRef.current = false;
       streamRef.current?.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
       handsRef.current?.close();
+      handsRef.current = null;
     };
-  }, [handleResults]);
+  }, [facing, handleResults]);
 
-  // Clear "newly scored" flash after 1.5s
   useEffect(() => {
     if (newlyScored === null) return;
     const t = setTimeout(() => setNewlyScored(null), 1500);
     return () => clearTimeout(t);
   }, [newlyScored]);
+
+  function flipCamera() {
+    setFacing((f) => (f === "user" ? "environment" : "user"));
+  }
 
   function finish() {
     setFinishing(true);
@@ -212,13 +268,18 @@ export default function HandwashingCamera({ onComplete, onExit }: Props) {
   const stepsCount = scored.filter(Boolean).length;
   const latherSec = Math.floor(latheringMs / 1000);
   const latherOk = latheringMs >= 20_000;
+  const isMirrored = facing === "user";
 
   return (
     <div className="fixed inset-0 bg-black z-[100] flex flex-col">
       <video ref={videoRef} playsInline muted className="hidden" />
 
-      {/* Canvas — NO mirror for back camera */}
-      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover" />
+      {/* Canvas — mirrored for front camera, normal for back */}
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full object-cover"
+        style={isMirrored ? { transform: "scaleX(-1)" } : undefined}
+      />
 
       {/* Loading */}
       {status === "loading" && (
@@ -251,28 +312,37 @@ export default function HandwashingCamera({ onComplete, onExit }: Props) {
         </div>
       )}
 
-      {/* Running HUD */}
+      {/* HUD */}
       {status === "running" && (
         <>
           {/* Top bar */}
           <div
-            className="absolute left-0 right-0 flex items-center px-4 z-20"
+            className="absolute left-0 right-0 flex items-center px-4 gap-3 z-20"
             style={{ top: "calc(env(safe-area-inset-top) + 12px)" }}
           >
-            {/* Lathering timer */}
-            <div className={`flex-1 flex items-center gap-2 ${latherOk ? "text-emerald-400" : "text-white/70"}`}>
-              <div className={`w-2 h-2 rounded-full ${handsVisible ? (latherOk ? "bg-emerald-400" : "bg-amber-400") : "bg-red-400"} animate-pulse`} />
+            <div className={`flex-1 flex items-center gap-2 ${latherOk ? "text-emerald-400" : "text-white/80"}`}>
+              <div className={`w-2 h-2 rounded-full animate-pulse ${handsVisible ? (latherOk ? "bg-emerald-400" : "bg-amber-400") : "bg-red-400"}`} />
               <span className="font-black text-base tabular-nums">{fmtTime(latheringMs)}</span>
-              {latherOk && <span className="text-[10px] font-bold">✓ 20s</span>}
+              {latherOk && <span className="text-[10px] font-bold text-emerald-400">✓ 20s</span>}
             </div>
 
-            {/* Close */}
+            {/* Camera flip — only for streak mode */}
+            {allowCameraFlip && (
+              <button
+                onClick={flipCamera}
+                className="w-10 h-10 flex items-center justify-center rounded-full bg-black/40"
+                aria-label="Flip camera"
+              >
+                <FlipHorizontal size={18} className="text-white" />
+              </button>
+            )}
+
             <button
               onClick={onExit}
-              className="w-11 h-11 flex items-center justify-center rounded-full bg-black/40"
+              className="w-10 h-10 flex items-center justify-center rounded-full bg-black/40"
               aria-label="Exit"
             >
-              <X size={20} className="text-white" />
+              <X size={18} className="text-white" />
             </button>
           </div>
 
@@ -285,8 +355,11 @@ export default function HandwashingCamera({ onComplete, onExit }: Props) {
             </div>
           </div>
 
-          {/* WHO steps panel — right side vertical */}
-          <div className="absolute right-3 z-20 flex flex-col gap-1.5" style={{ top: "calc(env(safe-area-inset-top) + 100px)" }}>
+          {/* WHO steps — right side panel */}
+          <div
+            className="absolute right-3 z-20 flex flex-col gap-1.5"
+            style={{ top: "calc(env(safe-area-inset-top) + 100px)" }}
+          >
             {WHO_STEPS.map((label, i) => (
               <div key={i} className="flex items-center gap-1.5 justify-end">
                 <AnimatePresence>
@@ -322,22 +395,27 @@ export default function HandwashingCamera({ onComplete, onExit }: Props) {
             ))}
           </div>
 
-          {/* Bottom — score + finish */}
+          {/* Bottom HUD */}
           <div className="absolute bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-black/90 via-black/60 to-transparent">
-            <div className="px-5 pt-10 pb-safe flex flex-col gap-3" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 24px)" }}>
-              {/* Score summary */}
+            <div className="px-5 pt-10 flex flex-col gap-3" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 24px)" }}>
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-white/50 text-xs font-semibold">Steps detected</p>
-                  <p className="text-white font-black text-2xl leading-none">{stepsCount}<span className="text-white/40 text-sm font-bold">/7</span></p>
+                  <p className="text-white/50 text-xs font-semibold">Steps</p>
+                  <p className="text-white font-black text-2xl leading-none">
+                    {stepsCount}<span className="text-white/40 text-sm font-bold">/7</span>
+                  </p>
                 </div>
-                <div className="text-right">
+                <div className="text-center">
                   <p className="text-white/50 text-xs font-semibold">Lathering</p>
-                  <p className={`font-black text-2xl leading-none ${latherOk ? "text-emerald-400" : "text-white"}`}>{latherSec}s<span className="text-white/40 text-sm font-bold">/20s</span></p>
+                  <p className={`font-black text-2xl leading-none ${latherOk ? "text-emerald-400" : "text-white"}`}>
+                    {latherSec}s<span className="text-white/40 text-sm font-bold">/20s</span>
+                  </p>
                 </div>
                 <div className="text-right">
                   <p className="text-white/50 text-xs font-semibold">Score</p>
-                  <p className="text-amber-400 font-black text-2xl leading-none">{scorerRef.current.getScore()}</p>
+                  <p className="text-amber-400 font-black text-2xl leading-none">
+                    {scorerRef.current.getScore()}
+                  </p>
                 </div>
               </div>
 
@@ -347,7 +425,7 @@ export default function HandwashingCamera({ onComplete, onExit }: Props) {
                 disabled={finishing}
                 className="w-full h-[54px] rounded-[20px] bg-emerald-500 text-white font-black text-lg shadow-[0px_4px_0px_rgba(0,0,0,0.20)] disabled:opacity-60"
               >
-                {finishing ? "Saving…" : latherOk ? "Finish Session ✓" : `Finish (${latherSec}s / keep going!)`}
+                {finishing ? "Saving…" : latherOk ? "Finish Session ✓" : `Finish (${latherSec}s)`}
               </motion.button>
             </div>
           </div>
