@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import PortraitLock from "@/components/mobile/PortraitLock";
 
 export const metadata: Metadata = {
   title: "WASH360",
@@ -22,6 +23,7 @@ export const viewport: Viewport = {
 export default function MobileRootLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex flex-col min-h-screen bg-slate-50 max-w-[430px] mx-auto shadow-2xl relative">
+      <PortraitLock />
       {children}
     </div>
   );

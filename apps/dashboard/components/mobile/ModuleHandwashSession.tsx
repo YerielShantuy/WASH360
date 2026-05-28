@@ -323,6 +323,7 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
           uvZoneHitsRef.current = Array(7).fill(0);
           uvFrameCountRef.current = 0;
           uvZoneGlowingRef.current = Array(7).fill(false);
+          setRelay({ pump: false, uv: true }).catch(() => {}); // ensure UV on for scan
           transitionStage("uv_score");
         }
       } else {
