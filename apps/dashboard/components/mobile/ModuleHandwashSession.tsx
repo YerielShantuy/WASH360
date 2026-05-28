@@ -37,7 +37,7 @@ const UV_DURATION_MS   = 10_000;
 const DETECT_HOLD_MS   = 1500;    // hold in corner to activate pump
 const ABSENT_HOLD_MS   = 5_000;   // both hands absent before UV kicks in
 const UV_WAIT_HOLD_MS  = 1_000;   // both hands back before scan starts
-const PUMP_DURATION_S  = 7;       // pump on duration (seconds)
+const PUMP_DURATION_S  = 5;       // pump on duration (seconds)
 
 declare global {
   interface Window {
@@ -87,14 +87,43 @@ function centroid(lm: Landmark[], indices: number[]) {
   };
 }
 
-/** Calculate composite score from WHO steps + lathering time + UV coverage */
-function calcFinalScore(scoredSteps: boolean[], latheringMs: number): number {
+function toHSV(r: number, g: number, b: number): [number, number, number] {
+  const rn = r/255, gn = g/255, bn = b/255;
+  const max = Math.max(rn,gn,bn), min = Math.min(rn,gn,bn), d = max-min;
+  let h = 0;
+  if (d > 0) {
+    if (max === rn)      h = ((gn-bn)/d + 6) % 6;
+    else if (max === gn) h = (bn-rn)/d + 2;
+    else                 h = (rn-gn)/d + 4;
+    h *= 60;
+  }
+  return [h, max > 0 ? d/max : 0, max];
+}
+
+/** Sample a square region and return fraction of neon-yellow pixels. */
+function sampleNeonYellow(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number): number {
+  const x0 = Math.max(0, Math.floor(cx - r));
+  const y0 = Math.max(0, Math.floor(cy - r));
+  let data: ImageData;
+  try { data = ctx.getImageData(x0, y0, r*2, r*2); } catch { return 0; }
+  let yellow = 0;
+  for (let i = 0; i < data.data.length; i += 4) {
+    const [h, s, v] = toHSV(data.data[i], data.data[i+1], data.data[i+2]);
+    // Neon/fluorescent yellow: yellow-green hue, vivid, bright
+    if (h >= 40 && h <= 95 && s > 0.40 && v > 0.35) yellow++;
+  }
+  return yellow / (data.data.length / 4);
+}
+
+/**
+ * uvCoverage: 0–1 from actual fluorescent glow detection.
+ * Pass 1 for optimistic live estimates during lathering.
+ */
+function calcFinalScore(scoredSteps: boolean[], latheringMs: number, uvCoverage = 1): number {
   const stepCount = scoredSteps.filter(Boolean).length;
   const stepPts   = stepCount * 12 + (stepCount === 7 ? 4 : 0); // max 88
-  const latherPts = Math.min(10, Math.floor((latheringMs / 20_000) * 10)); // max 10
-  // UV cleanliness: which zones were washed = clean under UV
-  // Each completed WHO step = ~1.7 pts UV bonus (max ~12 → cap at 10 for 7 steps)
-  const uvPts = Math.round((stepCount / 7) * 10); // max 10 if all steps done
+  const latherPts = Math.min(6, Math.floor((latheringMs / 20_000) * 6));  // max 6
+  const uvPts     = Math.round(uvCoverage * 6); // max 6 — real glow coverage
   return Math.min(100, stepPts + latherPts + uvPts);
 }
 
@@ -115,7 +144,12 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
   const detectHoldRef  = useRef(0);   // corner hold
   const absentMsRef    = useRef(0);   // both hands absent ms (lather stage)
   const uvWaitMsRef    = useRef(0);   // both hands present ms (uv_wait stage)
-  const uvScoreMsRef   = useRef(0);   // uv scan elapsed ms
+  const uvScoreMsRef        = useRef(0);              // uv scan elapsed ms
+  const uvHandsPresentMsRef = useRef(0);              // both hands in frame during uv_score
+  const uvZoneHitsRef       = useRef<number[]>(Array(7).fill(0)); // frames each zone glowed
+  const uvFrameCountRef     = useRef(0);              // total frames in UV scan
+  const uvZoneGlowingRef    = useRef<boolean[]>(Array(7).fill(false)); // current-frame glow
+  const uvOffscreenRef      = useRef<HTMLCanvasElement | null>(null);  // raw-pixel canvas
   const lastUiRef      = useRef(0);
 
   // UI state
@@ -172,29 +206,32 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
         }
         ctx.shadowBlur = 0;
 
-        // Draw WHO zone glow spots — bright = dirty (uncleaned zone), dim = clean
+        // Draw WHO zone glow — yellow = fluorescent soap detected, dim purple = no glow
         if (cur === "uv_score") {
           for (let si = 0; si < 7; si++) {
-            const zone = WHO_ZONES[si];
-            const c = centroid(hand, zone);
+            const c = centroid(hand, WHO_ZONES[si]);
             const cx2 = c.x * canvas.width;
             const cy2 = c.y * canvas.height;
-            const isClean = scoredRef.current[si];
+            const glowing = uvZoneGlowingRef.current[si];
 
-            if (!isClean) {
-              // Bright fuchsia glow = soap residue / uncleaned area
-              const grd = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, 22);
-              grd.addColorStop(0, "rgba(240, 100, 255, 0.85)");
-              grd.addColorStop(1, "rgba(240, 100, 255, 0)");
+            if (glowing) {
+              // Bright neon-yellow: fluorescent soap detected
+              const grd = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, 26);
+              grd.addColorStop(0, "rgba(255, 240, 0, 0.90)");
+              grd.addColorStop(0.5, "rgba(200, 255, 0, 0.50)");
+              grd.addColorStop(1, "rgba(180, 255, 0, 0)");
               ctx.fillStyle = grd;
+              ctx.shadowColor = "#ffe000";
+              ctx.shadowBlur = 18;
               ctx.beginPath();
-              ctx.arc(cx2, cy2, 22, 0, Math.PI * 2);
+              ctx.arc(cx2, cy2, 26, 0, Math.PI * 2);
               ctx.fill();
+              ctx.shadowBlur = 0;
             } else {
-              // Dim teal = clean area
+              // Dim purple: no fluorescence in this zone
               const grd2 = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, 14);
-              grd2.addColorStop(0, "rgba(52, 211, 153, 0.4)");
-              grd2.addColorStop(1, "rgba(52, 211, 153, 0)");
+              grd2.addColorStop(0, "rgba(168, 85, 247, 0.25)");
+              grd2.addColorStop(1, "rgba(168, 85, 247, 0)");
               ctx.fillStyle = grd2;
               ctx.beginPath();
               ctx.arc(cx2, cy2, 14, 0, Math.PI * 2);
@@ -282,6 +319,10 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
         if (uvWaitMsRef.current >= UV_WAIT_HOLD_MS) {
           uvWaitMsRef.current = 0;
           uvScoreMsRef.current = 0;
+          uvHandsPresentMsRef.current = 0;
+          uvZoneHitsRef.current = Array(7).fill(0);
+          uvFrameCountRef.current = 0;
+          uvZoneGlowingRef.current = Array(7).fill(false);
           transitionStage("uv_score");
         }
       } else {
@@ -291,13 +332,42 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
 
     if (cur === "uv_score") {
       uvScoreMsRef.current += deltaMs;
+      if (allHands.length >= 2) uvHandsPresentMsRef.current += deltaMs;
       const progress = Math.min(uvScoreMsRef.current / UV_DURATION_MS, 1);
       setUvProgress(progress);
+
+      // Fluorescent yellow detection — sample raw video pixels per WHO zone
+      if (allHands.length > 0) {
+        let oc = uvOffscreenRef.current;
+        if (!oc) { oc = document.createElement("canvas"); uvOffscreenRef.current = oc; }
+        if (oc.width !== canvas.width || oc.height !== canvas.height) {
+          oc.width = canvas.width; oc.height = canvas.height;
+        }
+        const octx = oc.getContext("2d", { willReadFrequently: true });
+        if (octx) {
+          octx.drawImage(results.image, 0, 0, oc.width, oc.height);
+          uvFrameCountRef.current++;
+          for (const hand of allHands) {
+            for (let si = 0; si < 7; si++) {
+              const c = centroid(hand, WHO_ZONES[si]);
+              const ratio = sampleNeonYellow(octx, c.x * oc.width, c.y * oc.height, 22);
+              if (ratio > 0.12) {
+                uvZoneHitsRef.current[si]++;
+                uvZoneGlowingRef.current[si] = true;
+              } else {
+                uvZoneGlowingRef.current[si] = false;
+              }
+            }
+          }
+        }
+      }
 
       if (uvScoreMsRef.current >= UV_DURATION_MS) {
         transitionStage("loading"); // stop further updates
         setRelay({ pump: false, uv: false }).catch(() => {});
-        const finalScore = calcFinalScore(scoredRef.current, latheringMsRef.current);
+        const frames = uvFrameCountRef.current || 1;
+        const uvCoverage = uvZoneHitsRef.current.reduce((s, h) => s + Math.min(h / frames, 1), 0) / 7;
+        const finalScore = calcFinalScore(scoredRef.current, latheringMsRef.current, uvCoverage);
         onComplete(scoredRef.current, finalScore, latheringMsRef.current);
         return;
       }
@@ -615,12 +685,12 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
             {/* UV legend */}
             <div className="flex items-center gap-4 mt-3">
               <div className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded-full bg-fuchsia-500" />
-                <span className="text-white/50 text-[10px]">Soap residue</span>
+                <div className="w-3 h-3 rounded-full bg-yellow-300" />
+                <span className="text-white/50 text-[10px]">Soap glow detected</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded-full bg-emerald-400" />
-                <span className="text-white/50 text-[10px]">Clean zone</span>
+                <div className="w-3 h-3 rounded-full bg-purple-500" />
+                <span className="text-white/50 text-[10px]">No glow</span>
               </div>
             </div>
           </div>

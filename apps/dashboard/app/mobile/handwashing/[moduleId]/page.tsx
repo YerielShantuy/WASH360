@@ -54,6 +54,15 @@ export default function HandwashingPage() {
   const [cooldownActive, setCooldownActive] = useState(false);
   const nfcAbortRef = useRef<AbortController | null>(null);
 
+  // Lock back to portrait when showing scoring / result screens
+  useEffect(() => {
+    if (stage === "session") return;
+    try { (screen.orientation as any).lock("portrait").catch(() => {}); } catch {} // eslint-disable-line @typescript-eslint/no-explicit-any
+    return () => {
+      try { screen.orientation.unlock(); } catch {}
+    };
+  }, [stage]);
+
   // NFC silent scan — auto-redirects if a different module tag is scanned
   useEffect(() => {
     if (stage !== "session" || isStreak) return;
