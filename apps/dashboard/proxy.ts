@@ -4,7 +4,7 @@ import { type NextRequest, NextResponse } from "next/server";
 const MOBILE_UA = /Mobi|Android|iPhone|iPad|iPod|BlackBerry|Windows Phone/i;
 const OPEN_PATHS = new Set(["/mobile/sign-in", "/mobile/sign-up"]);
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (!pathname.startsWith("/mobile")) {
