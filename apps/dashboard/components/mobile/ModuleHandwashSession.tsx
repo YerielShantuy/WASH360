@@ -71,12 +71,8 @@ function loadScript(src: string): Promise<void> {
   });
 }
 
-function handInTopRight(hands: Landmark[][]): boolean {
-  for (const hand of hands) {
-    const w = hand[0];
-    if (w.x > 0.65 && w.y < 0.35) return true;
-  }
-  return false;
+function handDetected(hands: Landmark[][]): boolean {
+  return hands.length > 0;
 }
 
 function centroid(lm: Landmark[], indices: number[]) {
@@ -274,8 +270,8 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
 
     // ── Stage logic ──
     if (cur === "detect_hand") {
-      const inCorner = handInTopRight(allHands);
-      if (inCorner) {
+      const seen = handDetected(allHands);
+      if (seen) {
         detectHoldRef.current += deltaMs;
         if (detectHoldRef.current >= DETECT_HOLD_MS) {
           detectHoldRef.current = 0;
@@ -296,7 +292,7 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
       state.scored.forEach((s, i) => { if (s && !scoredRef.current[i]) setNewlyScored(i); });
       scoredRef.current = state.scored;
 
-      // Track both-hands-absent time
+      // Track both-hands-absent time — reset immediately when hands return
       const bothAbsent = allHands.length === 0;
       if (bothAbsent) {
         absentMsRef.current += deltaMs;
@@ -307,15 +303,15 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
           setRelay({ pump: false, uv: true }).catch(() => {});
         }
       } else {
-        absentMsRef.current = Math.max(0, absentMsRef.current - deltaMs * 0.3);
+        absentMsRef.current = 0; // reset immediately so timer is predictable
       }
       setAbsentProgress(Math.min(absentMsRef.current / ABSENT_HOLD_MS, 1));
     }
 
     if (cur === "uv_wait") {
-      // Wait for BOTH hands to come back into frame
-      const bothPresent = allHands.length >= 2;
-      if (bothPresent) {
+      // Wait for at least one hand to come back into frame
+      const handsPresent = allHands.length >= 1;
+      if (handsPresent) {
         uvWaitMsRef.current += deltaMs;
         if (uvWaitMsRef.current >= UV_WAIT_HOLD_MS) {
           uvWaitMsRef.current = 0;
@@ -325,7 +321,7 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
           uvFrameCountRef.current = 0;
           uvZoneGlowingRef.current = Array(7).fill(false);
           setUvWaitProgress(0);
-          setRelay({ pump: false, uv: true }).catch(() => {}); // ensure UV on for scan
+          setRelay({ pump: false, uv: true }).catch(() => {});
           transitionStage("uv_score");
         }
       } else {
@@ -521,23 +517,28 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
         </div>
       )}
 
-      {/* ── Detect hand (top-right corner) ── */}
+      {/* ── Detect hand ── */}
       {stage === "detect_hand" && (
         <>
-          {/* Corner target */}
-          <div className="absolute top-16 right-4 z-20" style={{ top: "calc(env(safe-area-inset-top) + 56px)" }}>
-            <div className={`w-24 h-24 rounded-2xl border-4 flex flex-col items-center justify-center gap-1 transition-colors duration-200 ${detectProgress > 0.1 ? "border-emerald-400 bg-emerald-400/10" : "border-white/40 bg-white/5"}`}>
-              <span className="text-3xl">✋</span>
-              <svg width="32" height="32" className="-rotate-90">
-                <circle cx="16" cy="16" r="12" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="3" />
-                <circle cx="16" cy="16" r="12" fill="none" stroke={detectProgress > 0.1 ? "#4ade80" : "#fff"} strokeWidth="3" strokeLinecap="round"
-                  strokeDasharray={`${2*Math.PI*12}`} strokeDashoffset={`${2*Math.PI*12*(1-detectProgress)}`} className="transition-all duration-100" />
+          {/* Centred guide box */}
+          <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
+            <div className={`w-48 h-48 rounded-3xl border-4 flex flex-col items-center justify-center gap-3 transition-colors duration-200 ${detectProgress > 0.1 ? "border-emerald-400 bg-emerald-400/10" : "border-white/50 bg-white/5"}`}>
+              <span className="text-5xl">✋</span>
+              <svg width="44" height="44" className="-rotate-90">
+                <circle cx="22" cy="22" r="18" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="4" />
+                <circle cx="22" cy="22" r="18" fill="none" stroke={detectProgress > 0.1 ? "#4ade80" : "#fff"} strokeWidth="4" strokeLinecap="round"
+                  strokeDasharray={`${2*Math.PI*18}`} strokeDashoffset={`${2*Math.PI*18*(1-detectProgress)}`} className="transition-all duration-100" />
               </svg>
+              {detectProgress > 0.1 && (
+                <span className="text-emerald-400 text-xs font-black -mt-1">
+                  {Math.ceil((1 - detectProgress) * DETECT_HOLD_MS / 1000) || "✓"}s
+                </span>
+              )}
             </div>
           </div>
           <div className="absolute bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-black/85 to-transparent px-5 pt-12" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 24px)" }}>
-            <p className="text-white font-black text-xl mb-1">Place your hand here</p>
-            <p className="text-white/60 text-sm">Hold your right hand in the top-right corner to activate the water pump</p>
+            <p className="text-white font-black text-xl mb-1">Show your hands</p>
+            <p className="text-white/60 text-sm">Hold your hands in view of the camera to activate the water pump</p>
           </div>
         </>
       )}
@@ -610,24 +611,26 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
                 <div className="text-right"><p className="text-white/50 text-xs font-semibold">Score est.</p><p className="text-amber-400 font-black text-2xl leading-none">{calcFinalScore(scored, latheringMs)}</p></div>
               </div>
 
-              {/* Hands-absent auto-finish indicator */}
-              <div className="bg-white/10 rounded-2xl px-4 py-2.5 flex items-center gap-3">
+              {/* Hands-absent auto-finish indicator — always visible */}
+              <div className={`rounded-2xl px-4 py-2.5 flex items-center gap-3 transition-colors ${absentProgress > 0 ? "bg-purple-500/20 border border-purple-400/30" : "bg-white/10"}`}>
                 <div className="flex-1">
-                  <p className="text-white/70 text-xs font-semibold">Move hands away when done rinsing</p>
-                  <p className="text-white/40 text-[10px]">UV scan starts automatically after {ABSENT_HOLD_MS/1000} seconds</p>
+                  <p className={`text-xs font-semibold ${absentProgress > 0 ? "text-purple-200" : "text-white/70"}`}>
+                    {absentProgress > 0 ? "Hands away — UV scan starting…" : "Remove hands when done lathering"}
+                  </p>
+                  <p className="text-white/40 text-[10px]">UV scan starts after {ABSENT_HOLD_MS/1000}s hands-free</p>
                 </div>
-                {absentProgress > 0 && (
-                  <div className="w-10 h-10 flex-none relative">
-                    <svg width="40" height="40" className="-rotate-90">
-                      <circle cx="20" cy="20" r="16" fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="3" />
-                      <circle cx="20" cy="20" r="16" fill="none" stroke="#a855f7" strokeWidth="3" strokeLinecap="round"
-                        strokeDasharray={`${2*Math.PI*16}`} strokeDashoffset={`${2*Math.PI*16*(1-absentProgress)}`} className="transition-all duration-100" />
-                    </svg>
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <span className="text-white text-[9px] font-black">{Math.ceil((1-absentProgress)*(ABSENT_HOLD_MS/1000))}s</span>
-                    </div>
+                <div className="w-10 h-10 flex-none relative">
+                  <svg width="40" height="40" className="-rotate-90">
+                    <circle cx="20" cy="20" r="16" fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="3" />
+                    <circle cx="20" cy="20" r="16" fill="none" stroke={absentProgress > 0 ? "#a855f7" : "rgba(255,255,255,0.25)"} strokeWidth="3" strokeLinecap="round"
+                      strokeDasharray={`${2*Math.PI*16}`} strokeDashoffset={`${2*Math.PI*16*(1-absentProgress)}`} className="transition-all duration-100" />
+                  </svg>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <span className={`text-[9px] font-black ${absentProgress > 0 ? "text-purple-200" : "text-white/40"}`}>
+                      {absentProgress > 0 ? Math.ceil((1-absentProgress)*(ABSENT_HOLD_MS/1000)) : ABSENT_HOLD_MS/1000}s
+                    </span>
                   </div>
-                )}
+                </div>
               </div>
             </div>
           </div>
@@ -646,7 +649,7 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
                 <div className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
                 <span className="text-purple-300 font-black text-sm">UV Light Active</span>
               </div>
-              <p className="text-white font-black text-xl">Hold hands up to camera</p>
+              <p className="text-white font-black text-xl">Hold hands under UV light</p>
               <p className="text-white/60 text-sm mt-1 leading-relaxed">We'll scan for soap residue under UV light</p>
             </div>
             {handsVisible ? (
@@ -662,14 +665,14 @@ export default function ModuleHandwashSession({ moduleId, onComplete, onExit }: 
                   </svg>
                   <div className="absolute inset-0 flex items-center justify-center">
                     <span className="text-white font-black text-sm">
-                      {Math.ceil((1 - uvWaitProgress) * (UV_WAIT_HOLD_MS / 1000))}
+                      {uvWaitProgress >= 1 ? "✓" : Math.ceil((1 - uvWaitProgress) * (UV_WAIT_HOLD_MS / 1000))}
                     </span>
                   </div>
                 </div>
               </div>
             ) : (
               <div className="bg-white/10 text-white/50 px-4 py-2 rounded-full text-xs font-bold">
-                Waiting for both hands…
+                Show your hands to the camera…
               </div>
             )}
           </div>
