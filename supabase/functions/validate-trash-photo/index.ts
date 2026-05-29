@@ -44,12 +44,59 @@ interface VisionResponse {
   }>;
 }
 
-async function callGoogleVision(base64Image: string, apiKey: string) {
+/** Exchange a service-account JSON for a short-lived Bearer token via JWT. */
+async function getAccessToken(serviceAccountJson: string): Promise<string> {
+  const sa = JSON.parse(serviceAccountJson);
+  const now = Math.floor(Date.now() / 1000);
+
+  const header  = toBase64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const payload = toBase64Url(JSON.stringify({
+    iss: sa.client_email,
+    scope: "https://www.googleapis.com/auth/cloud-vision",
+    aud: "https://oauth2.googleapis.com/token",
+    iat: now,
+    exp: now + 3600,
+  }));
+
+  const pem = sa.private_key
+    .replace(/-----BEGIN PRIVATE KEY-----/, "")
+    .replace(/-----END PRIVATE KEY-----/, "")
+    .replace(/\n/g, "");
+  const keyBytes = Uint8Array.from(atob(pem), c => c.charCodeAt(0));
+  const cryptoKey = await crypto.subtle.importKey(
+    "pkcs8", keyBytes,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false, ["sign"]
+  );
+  const sig = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5", cryptoKey,
+    new TextEncoder().encode(`${header}.${payload}`)
+  );
+  const jwt = `${header}.${payload}.${toBase64Url(new Uint8Array(sig))}`;
+
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`,
+  });
+  const json = await res.json();
+  if (!json.access_token) throw new Error(`Token exchange failed: ${JSON.stringify(json)}`);
+  return json.access_token;
+}
+
+function toBase64Url(input: string | Uint8Array): string {
+  const str = typeof input === "string"
+    ? btoa(input)
+    : btoa(String.fromCharCode(...input));
+  return str.replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+}
+
+async function callGoogleVision(base64Image: string, accessToken: string) {
   const res = await fetch(
-    `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
+    "https://vision.googleapis.com/v1/images:annotate",
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${accessToken}` },
       body: JSON.stringify({
         requests: [{
           image: { content: base64Image },
@@ -144,15 +191,16 @@ serve(async (req: Request) => {
       });
     }
 
-    const apiKey = Deno.env.get("GOOGLE_VISION_API_KEY");
+    const serviceAccountJson = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_JSON");
     let result: ReturnType<typeof classify>;
 
-    if (apiKey) {
-      const { labels, objects } = await callGoogleVision(image_base64, apiKey);
+    if (serviceAccountJson) {
+      const accessToken = await getAccessToken(serviceAccountJson);
+      const { labels, objects } = await callGoogleVision(image_base64, accessToken);
       result = classify(labels, objects, expected_category);
     } else {
-      // No API key — demo mode: accept with realistic confidence
-      console.log("[classify] no API key, using demo fallback");
+      // No credentials — demo mode: accept with realistic confidence
+      console.log("[classify] no service account, using demo fallback");
       result = { accepted: true, confidence: 0.82, bounding_box: null, reason: "demo" };
     }
 
