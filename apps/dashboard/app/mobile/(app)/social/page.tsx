@@ -266,10 +266,10 @@ function FriendsTab({ myId }: { myId: string }) {
       }
     }
 
-    // Fetch profiles for friends
+    // Fetch profiles for friends (use leaderboard_public — bypasses RLS for public data)
     if (acceptedIds.length > 0) {
       const { data: profiles } = await db
-        .from("profiles")
+        .from("leaderboard_public")
         .select("id, username, level, total_points")
         .in("id", acceptedIds);
       setFriends(profiles ?? []);
@@ -281,7 +281,7 @@ function FriendsTab({ myId }: { myId: string }) {
     if (pendingReqs.length > 0) {
       const senderIds = pendingReqs.map((r) => r.senderId);
       const { data: senderProfiles } = await db
-        .from("profiles")
+        .from("leaderboard_public")
         .select("id, username, level")
         .in("id", senderIds);
       const map = new Map((senderProfiles ?? []).map((p: FriendProfile) => [p.id, p]));
@@ -310,7 +310,7 @@ function FriendsTab({ myId }: { myId: string }) {
     if (searchTimeout.current) clearTimeout(searchTimeout.current);
     searchTimeout.current = setTimeout(async () => {
       const { data: profiles } = await db
-        .from("profiles")
+        .from("leaderboard_public")
         .select("id, username, level")
         .ilike("username", `%${query.trim()}%`)
         .neq("id", myId)
@@ -552,9 +552,8 @@ function LeaderboardTab({ myId }: { myId: string }) {
   const fetchLeaderboard = useCallback(async () => {
     const supabase = createClient();
     const { data } = await (supabase as any)
-      .from("profiles")
+      .from("leaderboard_public")
       .select("id, username, total_points, level")
-      .order("total_points", { ascending: false })
       .limit(10);
     setRows((data ?? []) as LeaderboardRow[]);
     setLoading(false);
@@ -652,11 +651,11 @@ function LeaderboardTab({ myId }: { myId: string }) {
 // CommunityTab  (activity feed — static for now)
 // ─────────────────────────────────────────────────────────────
 const FEED = [
-  { id: "f1", user: "Siti J.",  action: "completed Trash Bingo in Monas zone",      time: "2m ago",  emoji: "🎯", pts: 100 },
-  { id: "f2", user: "Budi C.",  action: "did a 7-step handwash at Kota Tua module", time: "15m ago", emoji: "🤲", pts: 75  },
-  { id: "f3", user: "Rini W.",  action: "reported a clogged drain in Gambir",        time: "1h ago",  emoji: "📋", pts: 50  },
-  { id: "f4", user: "Adi G.",   action: "RSVPed to Kali Ciliwung Cleanup",           time: "2h ago",  emoji: "🧹", pts: 0   },
-  { id: "f5", user: "Dewi E.",  action: "reached Level 5!",                          time: "3h ago",  emoji: "⭐", pts: 0   },
+  { id: "f1", user: "Liam T.",   action: "completed Trash Bingo near Circular Quay",     time: "2m ago",  emoji: "🎯", pts: 100 },
+  { id: "f2", user: "Zoe M.",    action: "did a 7-step handwash at Bondi module",         time: "18m ago", emoji: "🤲", pts: 75  },
+  { id: "f3", user: "Noah K.",   action: "reported a clogged drain in Newtown",           time: "1h ago",  emoji: "📋", pts: 50  },
+  { id: "f4", user: "Mia R.",    action: "RSVPed to Parramatta River Cleanup",            time: "2h ago",  emoji: "🧹", pts: 0   },
+  { id: "f5", user: "Oliver P.", action: "reached Level 5!",                              time: "3h ago",  emoji: "⭐", pts: 0   },
 ] as const;
 
 function CommunityTab() {

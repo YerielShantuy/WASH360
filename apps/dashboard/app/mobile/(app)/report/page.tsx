@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { ChevronLeft, MapPin, Camera, CheckCircle, Loader2, X } from "lucide-react";
 import { createClient } from "@/lib/supabase";
@@ -21,6 +21,8 @@ const SEVERITY_OPTIONS = ["low", "medium", "high"] as const;
 
 type Stage = "form" | "submitting" | "done";
 
+type GpsCoords = { lat: number; lng: number; label: string } | null;
+
 export default function ReportPage() {
   const [stage, setStage] = useState<Stage>("form");
   const [type, setType] = useState<string | null>(null);
@@ -29,6 +31,28 @@ export default function ReportPage() {
   const [error, setError] = useState<string | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [gps, setGps] = useState<GpsCoords>(null);
+  const [gpsLoading, setGpsLoading] = useState(true);
+
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setGps({ lat: -33.8688, lng: 151.2093, label: "Sydney, NSW (default)" });
+      setGpsLoading(false);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude: lat, longitude: lng } = pos.coords;
+        setGps({ lat, lng, label: `${lat.toFixed(5)}, ${lng.toFixed(5)}` });
+        setGpsLoading(false);
+      },
+      () => {
+        setGps({ lat: -33.8688, lng: 151.2093, label: "Sydney, NSW (default)" });
+        setGpsLoading(false);
+      },
+      { timeout: 8000, maximumAge: 60000 }
+    );
+  }, []);
 
   async function submit() {
     const selected = REPORT_TYPES.find((r) => r.id === type);
@@ -41,13 +65,14 @@ export default function ReportPage() {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) { setError("Not signed in."); setStage("form"); return; }
 
+    const coords = gps ?? { lat: -33.8688, lng: 151.2093 };
     const { error: insertError } = await (supabase as any).from("drain_reports").insert({
       user_id: session.user.id,
       report_type: selected.dbType,
       severity,
       description: `[${selected.label}] ${desc}`.trim(),
       photo_path: "web-demo/placeholder.jpg",
-      location: null,
+      location: `SRID=4326;POINT(${coords.lng} ${coords.lat})`,
       status: "pending",
     });
 
@@ -145,9 +170,16 @@ export default function ReportPage() {
           <MapPin size={18} className="text-sky-500 flex-none" />
           <div>
             <p className="text-slate-800 font-semibold text-sm">Current Location</p>
-            <p className="text-slate-400 text-xs">Jakarta, Indonesia (GPS)</p>
+            <p className="text-slate-400 text-xs">
+              {gpsLoading ? "Detecting…" : (gps?.label ?? "Location unavailable")}
+            </p>
           </div>
-          <span className="ml-auto text-emerald-600 text-xs font-bold bg-emerald-50 px-2 py-0.5 rounded-full">Live</span>
+          {!gpsLoading && (
+            <span className="ml-auto text-emerald-600 text-xs font-bold bg-emerald-50 px-2 py-0.5 rounded-full">Live</span>
+          )}
+          {gpsLoading && (
+            <Loader2 size={14} className="ml-auto text-slate-400 animate-spin" />
+          )}
         </div>
 
         {/* Description */}

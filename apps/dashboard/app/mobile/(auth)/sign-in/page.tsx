@@ -7,7 +7,7 @@ import { Droplets, Eye, EyeOff, Loader2 } from "lucide-react";
 
 export default function MobileSignInPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -19,8 +19,24 @@ export default function MobileSignInPage() {
     setError(null);
 
     const supabase = createClient();
+    let email = identifier.trim().toLowerCase();
+
+    // If no @ sign, treat as username — look up the email
+    if (!email.includes("@")) {
+      const { data: emailData, error: rpcError } = await (supabase as any).rpc(
+        "get_user_email_by_username",
+        { p_username: identifier.trim() }
+      );
+      if (rpcError || !emailData) {
+        setError("No account found with that username.");
+        setLoading(false);
+        return;
+      }
+      email = emailData as string;
+    }
+
     const { data, error: authError } = await supabase.auth.signInWithPassword({
-      email: email.trim().toLowerCase(),
+      email,
       password,
     });
 
@@ -70,14 +86,14 @@ export default function MobileSignInPage() {
 
         <form onSubmit={handleSignIn} className="flex flex-col gap-4">
           <div>
-            <label className="block text-slate-700 font-semibold text-sm mb-1.5">Email</label>
+            <label className="block text-slate-700 font-semibold text-sm mb-1.5">Email or Username</label>
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              type="text"
+              value={identifier}
+              onChange={(e) => setIdentifier(e.target.value)}
               required
-              autoComplete="email"
-              placeholder="you@example.com"
+              autoComplete="username"
+              placeholder="you@example.com or your_username"
               className="w-full px-4 py-3 rounded-2xl border border-slate-200 text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400 focus:border-transparent"
             />
           </div>
