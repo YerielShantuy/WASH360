@@ -100,23 +100,26 @@ function toBase64Url(input: string | Uint8Array): string {
   return str.replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
 
-async function callGoogleVision(base64Image: string, accessToken: string) {
-  const res = await fetch(
-    "https://vision.googleapis.com/v1/images:annotate",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${accessToken}` },
-      body: JSON.stringify({
-        requests: [{
-          image: { content: base64Image },
-          features: [
-            { type: "LABEL_DETECTION",     maxResults: 20 },
-            { type: "OBJECT_LOCALIZATION", maxResults: 10 },
-          ],
-        }],
-      }),
-    }
-  );
+async function callGoogleVision(base64Image: string, auth: { type: "bearer"; token: string } | { type: "apikey"; key: string }) {
+  const url = auth.type === "apikey"
+    ? `https://vision.googleapis.com/v1/images:annotate?key=${auth.key}`
+    : "https://vision.googleapis.com/v1/images:annotate";
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (auth.type === "bearer") headers["Authorization"] = `Bearer ${auth.token}`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requests: [{
+        image: { content: base64Image },
+        features: [
+          { type: "LABEL_DETECTION",     maxResults: 20 },
+          { type: "OBJECT_LOCALIZATION", maxResults: 10 },
+        ],
+      }],
+    }),
+  });
   if (!res.ok) throw new Error(`Vision API HTTP ${res.status}: ${await res.text()}`);
   const json: VisionResponse = await res.json();
   const r = json.responses[0];
@@ -200,22 +203,34 @@ serve(async (req: Request) => {
       });
     }
 
+    const apiKey            = Deno.env.get("GOOGLE_VISION_API_KEY");
     const serviceAccountJson = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_JSON");
     let result: ReturnType<typeof classify>;
 
-    if (serviceAccountJson) {
+    if (apiKey) {
+      // Simplest auth — just an API key
+      try {
+        const { labels, objects } = await callGoogleVision(image_base64, { type: "apikey", key: apiKey });
+        result = classify(labels, objects, expected_category);
+        console.log("[validate-trash-photo] used API key auth, reason:", result.reason);
+      } catch (visionErr) {
+        console.warn("[validate-trash-photo] API key Vision call failed:", visionErr);
+        result = { accepted: true, confidence: 0.82, bounding_box: null, reason: "demo" };
+      }
+    } else if (serviceAccountJson) {
+      // Service account JWT auth
       try {
         const accessToken = await getAccessToken(serviceAccountJson);
-        const { labels, objects } = await callGoogleVision(image_base64, accessToken);
+        const { labels, objects } = await callGoogleVision(image_base64, { type: "bearer", token: accessToken });
         result = classify(labels, objects, expected_category);
+        console.log("[validate-trash-photo] used service account auth, reason:", result.reason);
       } catch (visionErr) {
-        // Vision API failed (e.g. revoked key, quota exceeded) — fall back to demo mode
-        console.warn("[validate-trash-photo] Vision API failed, using demo fallback:", visionErr);
+        console.warn("[validate-trash-photo] service account Vision call failed:", visionErr);
         result = { accepted: true, confidence: 0.82, bounding_box: null, reason: "demo" };
       }
     } else {
-      // No credentials — demo mode: accept with realistic confidence
-      console.log("[classify] no service account, using demo fallback");
+      // No credentials — demo mode
+      console.log("[validate-trash-photo] no credentials set, using demo fallback");
       result = { accepted: true, confidence: 0.82, bounding_box: null, reason: "demo" };
     }
 
