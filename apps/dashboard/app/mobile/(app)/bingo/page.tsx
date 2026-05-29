@@ -209,7 +209,7 @@ function BingoContent() {
           try {
             await db.from("bingo_submissions").insert(insertData);
             await db.from("bingo_cards").update({ extra_submissions_count: newCount }).eq("id", cardId);
-            await db.rpc("award_points", { p_user_id: session.user.id, p_amount: 10, p_source: "bingo_extra", p_reference: cardId });
+            await db.rpc("award_points", { p_user_id: session.user.id, p_amount: 10, p_source: "bingo", p_reference: cardId });
             triggerPointsFloat(10);
           } catch {}
         } else {
@@ -258,7 +258,7 @@ function BingoContent() {
         is_extra: false,
         status: "pending",
         points_awarded: 25,
-        location: null,
+        location: `SRID=4326;POINT(${gpsRef.current.lng} ${gpsRef.current.lat})`,
         synced_at: new Date().toISOString(),
       };
 
